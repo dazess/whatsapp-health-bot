@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Bot Admin</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Health Bot Admin Dashboard</h1>
+            <div>
+                {% if session.get('user') %}
+                    <span class="me-3">Welcome, {{ session.user.name }}</span>
+                    <a href="{{ url_for('logout') }}" class="btn btn-outline-danger">Logout</a>
+                {% endif %}
+            </div>
+        </div>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <div class="card mt-4">
+            <div class="card-header">Add New Patient</div>
+            <div class="card-body">
+                <form action="/patient/add" method="POST" class="row g-3">
+                    <div class="col-auto">
+                        <input type="text" class="form-control" name="name" placeholder="Patient Name" required>
+                    </div>
+                    <div class="col-auto">
+                        <input type="text" class="form-control" name="phone" placeholder="Phone (e.g. 85212345678)" required>
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-primary mb-3">Add Patient</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="mt-4">
+            <h3>Registered Patients</h3>
+            <ul class="list-group">
+                {% for patient in patients %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    {{ patient.name }} - {{ patient.phone_number }}
+                    <div>
+                        <a href="/patient/{{ patient.id }}" class="btn btn-sm btn-info">View Details & Set Appointment</a>
+                        <form action="/patient/delete/{{ patient.id }}" method="POST" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this patient?');">
+                            <button type="submit" class="btn btn-sm btn-danger ms-1">Delete</button>
+                        </form>
+                    </div>
+                </li>
+                {% else %}
+                <li class="list-group-item">No patients found.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

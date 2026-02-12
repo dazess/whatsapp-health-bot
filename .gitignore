@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Flask
+instance/
+*.db
+
+# Node.js
+node_modules/
+npm-debug.log
+
+# WhatsApp Service Credentials
+wa-service/auth_info_baileys/
+wa-service/auth_info_baileys_backup_*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDES
+.vscode/
+.idea/

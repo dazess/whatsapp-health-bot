@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient Details</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-5">
+        <a href="/" class="btn btn-secondary mb-3">&larr; Back to Dashboard</a>
+        <h1>{{ patient.name }}</h1>
+        <p>Phone: {{ patient.phone_number }}</p>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header bg-primary text-white">Appointments</div>
+                    <div class="card-body">
+                         <form action="/appointment/add" method="POST" class="mb-3">
+                            <input type="hidden" name="patient_id" value="{{ patient.id }}">
+                            <div class="mb-2">
+                                <label>Date & Time</label>
+                                <input type="datetime-local" name="date" class="form-control" required>
+                            </div>
+                            <div class="mb-2">
+                                <label>Description</label>
+                                <input type="text" name="description" class="form-control">
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-sm">Schedule Appointment</button>
+                        </form>
+                        
+                        <ul class="list-group">
+                            {% for appt in appointments %}
+                            <li class="list-group-item {% if appt.date < now %}list-group-item-secondary text-muted{% endif %}">
+                                <strong>{{ appt.date.strftime('%Y-%m-%d %H:%M') }}</strong>
+                                <br>
+                                {{ appt.description }}
+                                <span class="badge bg-{{ 'secondary' if appt.date < now else 'success' if appt.reminded else 'warning' }} float-end ms-2">
+                                    {{ 'Happened' if appt.date < now else 'Reminded' if appt.reminded else 'Pending Reminder' }}
+                                </span>
+                                {% if appt.date >= now or not appt.reminded %}
+                                <div class="float-end">
+                                    <form action="/appointment/send_reminder/{{ appt.id }}" method="POST" style="display:inline;">
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary py-0 me-1" style="font-size: 0.8rem;">Send Now</button>
+                                    </form>
+                                    <form action="/appointment/delete/{{ appt.id }}" method="POST" style="display:inline;" onsubmit="return confirm('Confirm cancel appointment?');">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0" style="font-size: 0.8rem;">Cancel</button>
+                                    </form>
+                                </div>
+                                {% endif %}
+                            </li>
+                            {% else %}
+                            <li class="list-group-item">No appointments scheduled.</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header bg-success text-white">E-Diary Entries</div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            {% for entry in diary_entries %}
+                            <li class="list-group-item">
+                                <small class="text-muted">{{ entry.date.strftime('%Y-%m-%d %H:%M') }}</small>
+                                <p class="mb-0">{{ entry.content }}</p>
+                            </li>
+                            {% else %}
+                            <li class="list-group-item">No diary entries yet.</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
