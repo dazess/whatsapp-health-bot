@@ -25,6 +25,7 @@ const WA_SERVICE_API_KEY = (process.env.WA_SERVICE_API_KEY || '').trim();
 const WEBHOOK_TOKEN = (process.env.WHATSAPP_WEBHOOK_TOKEN || '').trim();
 
 let sock;
+let isWhatsAppReady = false;
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -53,6 +54,7 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
+            isWhatsAppReady = false;
             const shouldReconnect = (lastDisconnect.error instanceof Boom) ?
                 lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut : true;
             
@@ -65,6 +67,7 @@ async function connectToWhatsApp() {
                 process.exit(0); // Exit so you can restart and scan again if needed
             }
         } else if (connection === 'open') {
+            isWhatsAppReady = true;
             console.log('opened connection');
         }
     });
@@ -111,13 +114,18 @@ app.post('/send-message', async (req, res) => {
 
     const { phone, message } = req.body;
 
-    if (!sock) {
+    if (!sock || !isWhatsAppReady) {
         return res.status(503).json({ error: 'WhatsApp not connected' });
     }
 
     try {
         const jid = `${phone}@s.whatsapp.net`;
-        const exists = await sock.onWhatsApp(jid);
+        const exists = await Promise.race([
+            sock.onWhatsApp(jid),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('onWhatsApp lookup timeout')), 8000)
+            ),
+        ]);
         
         if (exists && exists[0]?.exists) {
             await sock.sendMessage(jid, { text: message });

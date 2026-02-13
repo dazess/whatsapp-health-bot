@@ -23,7 +23,7 @@ def generate_google_calendar_link(title, start_dt, description=""):
 
 class BaileysClient:
     def __init__(self):
-        self.base_url = 'http://localhost:3000' # Local Node.js service
+        self.base_url = 'http://127.0.0.1:3000' # Local Node.js service
         self.api_key = os.getenv('WA_SERVICE_API_KEY', '').strip()
 
     def send_message(self, phone_number, message):
