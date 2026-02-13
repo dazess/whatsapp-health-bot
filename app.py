@@ -202,12 +202,13 @@ def send_appointment_reminder_now(appointment_id):
         print(f"Sending manual reminder to {patient.name} ({patient.phone_number})...")
         result = client.send_message(patient.phone_number, msg)
         
-        if result:
+        if result and result.get('status') == 'sent':
             appointment.reminded = True
             db.session.commit()
             flash('Reminder sent successfully!', 'success')
         else:
-            flash('Failed to send reminder. Check logs.', 'error')
+            error_message = (result or {}).get('error', 'Unknown error')
+            flash(f'Failed to send reminder: {error_message}', 'error')
             
     except Exception as e:
         flash(f'Error sending reminder: {str(e)}', 'error')

@@ -35,7 +35,7 @@ def send_appointment_reminders(app):
             print(f"Sending reminder to {patient.name} ({patient.phone_number})...")
             result = client.send_message(patient.phone_number, msg)
             
-            if result:
+            if result and result.get('status') == 'sent':
                 appointment.reminded = True
                 db.session.commit()
 

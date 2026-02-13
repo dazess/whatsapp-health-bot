@@ -42,8 +42,24 @@ class BaileysClient:
 
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=15)
-            response.raise_for_status()
-            return response.json()
+            try:
+                body = response.json()
+            except ValueError:
+                body = {"error": response.text}
+
+            if response.ok:
+                return body
+
+            error_message = body.get('error') if isinstance(body, dict) else str(body)
+            print(f"Failed sending to {phone_number}: HTTP {response.status_code} - {error_message}")
+            return {
+                "status": "error",
+                "status_code": response.status_code,
+                "error": error_message,
+            }
         except requests.exceptions.RequestException as e:
             print(f"Error sending message to {phone_number}: {e}")
-            return None
+            return {
+                "status": "error",
+                "error": str(e),
+            }
