@@ -32,16 +32,27 @@
         <div class="card mt-4">
             <div class="card-header">Add New Patient</div>
             <div class="card-body">
-                <form action="/patient/add" method="POST" class="row g-3">
-                    <div class="col-auto">
-                        <input type="text" class="form-control" name="name" placeholder="Patient Name" required>
+                <form action="/patient/add" method="POST">
+                    <div class="row g-3 mb-2">
+                        <div class="col-auto">
+                            <label class="form-label text-muted small mb-0">Patient Name</label>
+                            <input type="text" class="form-control" name="name" placeholder="Patient Name" required>
+                        </div>
+                        <div class="col-auto" style="width: 250px;">
+                            <label class="form-label text-muted small mb-0">Phone</label>
+                            <input type="text" class="form-control" name="phone" placeholder="e.g. 85212345678" required>
+                        </div>
+                        <div class="col-auto">
+                            <label class="form-label text-muted small mb-0">Birthdate (optional)</label>
+                            <input type="date" class="form-control" name="birthdate">
+                        </div>
                     </div>
-                    <div class="col-auto" style="width: 450px;">
-                        <input type="text" class="form-control" name="phone" placeholder="Phone (e.g. 85212345678)" required>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-8">
+                            <input type="text" class="form-control" name="description" placeholder="Patient description for personalised birthday card (optional, e.g. 鍾意行山、有養貓)">
+                        </div>
                     </div>
-                    <div class="col-auto">
-                        <button type="submit" class="btn btn-primary mb-3">Add Patient</button>
-                    </div>
+                    <button type="submit" class="btn btn-primary">Add Patient</button>
                 </form>
             </div>
         </div>

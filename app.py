@@ -2,18 +2,20 @@ import os
 import hmac
 from datetime import datetime, timedelta
 from functools import wraps
+from dotenv import load_dotenv
+
+# Load .env relative to this file so it works regardless of working directory
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
+
 from flask import Flask, session, request, jsonify, render_template, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from authlib.integrations.flask_client import OAuth
 from apscheduler.schedulers.background import BackgroundScheduler
-from dotenv import load_dotenv
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from models import db, Patient, Appointment, DiaryEntry, hash_data
-from services import BaileysClient, generate_google_calendar_link
+from services import BaileysClient, generate_google_calendar_link, generate_birthday_card
 import scheduler_tasks
-
-load_dotenv()
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///healthbot.db'
@@ -123,7 +125,9 @@ def index():
 def add_patient():
     name = request.form.get('name')
     phone = request.form.get('phone') # Expecting full number e.g. 5511999999999
-    
+    birthdate_str = request.form.get('birthdate')  # YYYY-MM-DD, optional
+    description = request.form.get('description')  # Free text, optional
+
     if not name or not phone:
         flash('Name and phone are required.', 'error')
         return redirect(url_for('index'))
@@ -131,16 +135,29 @@ def add_patient():
     if not phone.isdigit():
         flash('Error: Phone number must contain only digits.', 'error')
         return redirect(url_for('index'))
-    
+
     if len(phone) != 11 or not phone.startswith('852'):
         flash('Error: Phone number must correspond to the format 852xxxxxxxx.', 'error')
         return redirect(url_for('index'))
 
-    new_patient = Patient(name=name, phone_number=phone)
+    birthdate = None
+    if birthdate_str:
+        try:
+            birthdate = datetime.strptime(birthdate_str, '%Y-%m-%d').date()
+        except ValueError:
+            flash('Error: Invalid birthdate format.', 'error')
+            return redirect(url_for('index'))
+
+    new_patient = Patient(
+        name=name,
+        phone_number=phone,
+        birthdate=birthdate,
+        description=description or None,
+    )
     db.session.add(new_patient)
     db.session.commit()
     flash('Patient added successfully!', 'success')
-    
+
     return redirect(url_for('index'))
 
 @app.route('/patient/delete/<int:patient_id>', methods=['POST'])
@@ -225,6 +242,84 @@ def delete_appointment(appointment_id):
     flash('Appointment cancelled.', 'success')
     return redirect(url_for('view_patient', patient_id=patient_id))
 
+@app.route('/appointment/edit/<int:appointment_id>', methods=['POST'])
+@login_required
+def edit_appointment(appointment_id):
+    appointment = Appointment.query.get_or_404(appointment_id)
+    appointment.description = request.form.get('description', '').strip() or None
+    db.session.commit()
+    flash('Appointment updated.', 'success')
+    return redirect(url_for('view_patient', patient_id=appointment.patient_id))
+
+@app.route('/patient/edit/<int:patient_id>', methods=['POST'])
+@login_required
+def edit_patient(patient_id):
+    patient = Patient.query.get_or_404(patient_id)
+    patient.name = request.form.get('name', '').strip() or patient.name
+    patient.description = request.form.get('description', '').strip() or None
+    birthdate_str = request.form.get('birthdate', '').strip()
+    if birthdate_str:
+        try:
+            patient.birthdate = datetime.strptime(birthdate_str, '%Y-%m-%d').date()
+        except ValueError:
+            flash('Invalid birthdate format.', 'error')
+            return redirect(url_for('view_patient', patient_id=patient_id))
+    else:
+        patient.birthdate = None
+    db.session.commit()
+    flash('Patient details updated.', 'success')
+    return redirect(url_for('view_patient', patient_id=patient_id))
+
+@app.route('/patient/preview_birthday_card/<int:patient_id>', methods=['POST'])
+@login_required
+def preview_birthday_card(patient_id):
+    patient = Patient.query.get_or_404(patient_id)
+    try:
+        card_text = generate_birthday_card(
+            patient_name=patient.name,
+            patient_description=patient.description or '',
+        )
+        return render_template('birthday_card_preview.html', patient=patient, card_text=card_text)
+    except Exception as e:
+        flash(f'Error generating birthday card: {str(e)}', 'error')
+        return redirect(url_for('view_patient', patient_id=patient_id))
+
+@app.route('/patient/process_birthday_card/<int:patient_id>', methods=['POST'])
+@login_required
+def confirm_send_birthday_card(patient_id):
+    patient = Patient.query.get_or_404(patient_id)
+    action = request.form.get('action')
+    
+    if action == 'regenerate':
+        try:
+            card_text = generate_birthday_card(
+                patient_name=patient.name,
+                patient_description=patient.description or '',
+            )
+            flash('Birthday card regenerated.', 'success')
+            return render_template('birthday_card_preview.html', patient=patient, card_text=card_text)
+        except Exception as e:
+            flash(f'Error regenerating card: {str(e)}', 'error')
+            return redirect(url_for('view_patient', patient_id=patient_id))
+            
+    elif action == 'send':
+        card_text = request.form.get('card_text')
+        try:
+            client = BaileysClient()
+            result = client.send_message(patient.phone_number, card_text)
+            if result and result.get('status') != 'error':
+                patient.birthday_card_sent_year = datetime.now().year
+                db.session.commit()
+                flash('Birthday card sent successfully!', 'success')
+            else:
+                error_message = (result or {}).get('error', 'Unknown error')
+                flash(f'Failed to send birthday card: {error_message}', 'error')
+        except Exception as e:
+            flash(f'Error sending birthday card: {str(e)}', 'error')
+        return redirect(url_for('view_patient', patient_id=patient_id))
+    
+    return redirect(url_for('view_patient', patient_id=patient_id))
+
 # --- Webhook for Baileys Service (Handling Incoming Messages) ---
 
 @app.route('/webhook/whatsapp', methods=['POST'])
@@ -278,19 +373,40 @@ def whatsapp_webhook():
 
 # --- Application Setup ---
 
+def _migrate_db():
+    """Add new columns to existing SQLite database if they are missing."""
+    from sqlalchemy import text
+    with db.engine.connect() as conn:
+        existing = [row[1] for row in conn.execute(text("PRAGMA table_info(patient)")).fetchall()]
+        migrations = [
+            ("birthdate", "ALTER TABLE patient ADD COLUMN birthdate DATE"),
+            ("description", "ALTER TABLE patient ADD COLUMN description TEXT"),
+            ("birthday_card_sent_year", "ALTER TABLE patient ADD COLUMN birthday_card_sent_year INTEGER"),
+        ]
+        for col, sql in migrations:
+            if col not in existing:
+                conn.execute(text(sql))
+                print(f"DB migration: added column '{col}' to patient table.")
+        conn.commit()
+
+
 def create_scheduler():
     scheduler = BackgroundScheduler()
     # Check for appointments every hour (or once a day)
     scheduler.add_job(func=scheduler_tasks.send_appointment_reminders, args=[app], trigger="interval", hours=1)
-    
+
     # Send diary reminder every day at 9:00 AM
     scheduler.add_job(func=scheduler_tasks.send_daily_diary_reminders, args=[app], trigger="cron", hour=9, minute=0)
-    
+
+    # Send birthday cards every day at 10:00 AM
+    scheduler.add_job(func=scheduler_tasks.send_birthday_cards, args=[app], trigger="cron", hour=10, minute=0)
+
     scheduler.start()
 
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    
+        _migrate_db()
+
     create_scheduler()
     app.run(host='127.0.0.1', debug=False, port=int(os.getenv('PORT', '5000')))

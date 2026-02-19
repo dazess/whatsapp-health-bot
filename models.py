@@ -55,12 +55,21 @@ def hash_data(data):
 class Patient(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(EncryptedString(255), nullable=False)
-    
+
     # We store the encrypted phone for display/contact
     phone_encrypted = db.Column(EncryptedString(255), nullable=False)
     # We store a hash for searching (indexes)
     phone_hash = db.Column(db.String(64), unique=True, nullable=False)
-    
+
+    # Birthday (plain date – no PII beyond what name already reveals)
+    birthdate = db.Column(db.Date, nullable=True)
+
+    # Free-text description used by AI to personalise the birthday card
+    description = db.Column(EncryptedText, nullable=True)
+
+    # Track whether a birthday card was already sent this calendar year
+    birthday_card_sent_year = db.Column(db.Integer, nullable=True)
+
     appointments = db.relationship('Appointment', backref='patient', lazy=True)
     diary_entries = db.relationship('DiaryEntry', backref='patient', lazy=True)
 

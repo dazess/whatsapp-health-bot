@@ -9,15 +9,28 @@
 <body>
     <div class="container mt-5">
         <a href="/" class="btn btn-secondary mb-3">&larr; Back to Dashboard</a>
-        <h1>{{ patient.name }}</h1>
-        <p>Phone: {{ patient.phone_number }}</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <h1 class="mb-0">{{ patient.name }}</h1>
+        <p class="text-muted mb-3">Phone: {{ patient.phone_number }}</p>
 
         <div class="row">
+            <!-- Left column: Appointments -->
             <div class="col-md-6">
                 <div class="card mb-4">
                     <div class="card-header bg-primary text-white">Appointments</div>
                     <div class="card-body">
-                         <form action="/appointment/add" method="POST" class="mb-3">
+                        <form action="/appointment/add" method="POST" class="mb-3">
                             <input type="hidden" name="patient_id" value="{{ patient.id }}">
                             <div class="mb-2">
                                 <label>Date & Time</label>
@@ -29,7 +42,7 @@
                             </div>
                             <button type="submit" class="btn btn-primary btn-sm">Schedule Appointment</button>
                         </form>
-                        
+
                         <ul class="list-group">
                             {% for appt in appointments %}
                             <li class="list-group-item {% if appt.date < now %}list-group-item-secondary text-muted{% endif %}">
@@ -39,16 +52,25 @@
                                 <span class="badge bg-{{ 'secondary' if appt.date < now else 'success' if appt.reminded else 'warning' }} float-end ms-2">
                                     {{ 'Happened' if appt.date < now else 'Reminded' if appt.reminded else 'Pending Reminder' }}
                                 </span>
-                                {% if appt.date >= now or not appt.reminded %}
                                 <div class="float-end">
+                                    {% if appt.date >= now or not appt.reminded %}
                                     <form action="/appointment/send_reminder/{{ appt.id }}" method="POST" style="display:inline;">
                                         <button type="submit" class="btn btn-sm btn-outline-secondary py-0 me-1" style="font-size: 0.8rem;">Send Now</button>
                                     </form>
                                     <form action="/appointment/delete/{{ appt.id }}" method="POST" style="display:inline;" onsubmit="return confirm('Confirm cancel appointment?');">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0" style="font-size: 0.8rem;">Cancel</button>
+                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 me-1" style="font-size: 0.8rem;">Cancel</button>
+                                    </form>
+                                    {% endif %}
+                                    <button class="btn btn-sm btn-outline-primary py-0" style="font-size: 0.8rem;"
+                                        type="button" data-bs-toggle="collapse" data-bs-target="#editAppt{{ appt.id }}">Edit</button>
+                                </div>
+                                <div class="collapse mt-2" id="editAppt{{ appt.id }}">
+                                    <form action="/appointment/edit/{{ appt.id }}" method="POST" class="d-flex gap-2">
+                                        <input type="text" name="description" class="form-control form-control-sm"
+                                            value="{{ appt.description or '' }}" placeholder="Description">
+                                        <button type="submit" class="btn btn-primary btn-sm">Save</button>
                                     </form>
                                 </div>
-                                {% endif %}
                             </li>
                             {% else %}
                             <li class="list-group-item">No appointments scheduled.</li>
@@ -57,8 +79,72 @@
                     </div>
                 </div>
             </div>
-            
+
+            <!-- Right column: Birthday Card + E-Diary -->
             <div class="col-md-6">
+
+                <!-- Birthday Card -->
+                <div class="card mb-4">
+                    <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                        <span>🎂 Birthday Card</span>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-dark py-0" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#editPatientForm">Edit Info</button>
+                            <form action="{{ url_for('preview_birthday_card', patient_id=patient.id) }}" method="POST">
+                                <button type="submit" class="btn btn-sm btn-dark py-0">Send Now</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group list-group-flush mb-2">
+                            <li class="list-group-item px-0">
+                                <small class="text-muted">Birthdate</small><br>
+                                {% if patient.birthdate %}
+                                    {{ patient.birthdate.strftime('%Y-%m-%d') }}
+                                    {% if patient.birthday_card_sent_year %}
+                                    <span class="badge bg-success ms-1">Card sent {{ patient.birthday_card_sent_year }}</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span class="text-muted fst-italic">Not set</span>
+                                {% endif %}
+                            </li>
+                            <li class="list-group-item px-0">
+                                <small class="text-muted">Description</small><br>
+                                {% if patient.description %}
+                                    {{ patient.description }}
+                                {% else %}
+                                    <span class="text-muted fst-italic">Not set</span>
+                                {% endif %}
+                            </li>
+                        </ul>
+
+                        <div class="collapse" id="editPatientForm">
+                            <hr>
+                            <form action="/patient/edit/{{ patient.id }}" method="POST">
+                                <div class="row g-2 mb-2">
+                                    <div class="col">
+                                        <label class="form-label small mb-0">Name</label>
+                                        <input type="text" name="name" class="form-control form-control-sm"
+                                            value="{{ patient.name }}" required>
+                                    </div>
+                                    <div class="col">
+                                        <label class="form-label small mb-0">Birthdate</label>
+                                        <input type="date" name="birthdate" class="form-control form-control-sm"
+                                            value="{{ patient.birthdate.strftime('%Y-%m-%d') if patient.birthdate else '' }}">
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small mb-0">Description (for birthday card)</label>
+                                    <input type="text" name="description" class="form-control form-control-sm"
+                                        value="{{ patient.description or '' }}" placeholder="e.g. 鍾意行山、有養貓">
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- E-Diary -->
                 <div class="card">
                     <div class="card-header bg-success text-white">E-Diary Entries</div>
                     <div class="card-body">
@@ -74,8 +160,10 @@
                         </ul>
                     </div>
                 </div>
+
             </div>
         </div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
