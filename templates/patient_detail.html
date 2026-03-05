@@ -22,7 +22,13 @@
         {% endwith %}
 
         <h1 class="mb-0">{{ patient.name }}</h1>
-        <p class="text-muted mb-3">Phone: {{ patient.phone_number }}</p>
+        <p class="text-muted mb-3">
+            Phone: {{ patient.phone_number }}
+            <br>
+            <span class="badge bg-{{ 'success' if patient.send_ediary_reminders else 'secondary' }}">
+                {{ 'E-diary Reminders: ON' if patient.send_ediary_reminders else 'E-diary Reminders: OFF' }}
+            </span>
+        </p>
 
         <div class="row">
             <!-- Left column: Appointments -->
@@ -137,6 +143,15 @@
                                     <label class="form-label small mb-0">Description (for birthday card)</label>
                                     <input type="text" name="description" class="form-control form-control-sm"
                                         value="{{ patient.description or '' }}" placeholder="e.g. 鍾意行山、有養貓">
+                                </div>
+                                <div class="mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="send_ediary_reminders" id="editSendEdiary" 
+                                               {% if patient.send_ediary_reminders %}checked{% endif %}>
+                                        <label class="form-check-label small" for="editSendEdiary">
+                                            Send E-diary Reminders Daily
+                                        </label>
+                                    </div>
                                 </div>
                                 <button type="submit" class="btn btn-primary btn-sm">Save</button>
                             </form>

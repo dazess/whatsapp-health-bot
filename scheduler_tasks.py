@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from models import db, Patient, Appointment
-from services import BaileysClient, generate_google_calendar_link, generate_birthday_card
+from services import BaileysClient, generate_google_calendar_link, generate_birthday_card, send_patient_greeting_if_needed
 
 def send_appointment_reminders(app):
     """
@@ -22,15 +22,16 @@ def send_appointment_reminders(app):
         client = BaileysClient()
         
         for appointment in appointments:
-            patient = appointment.patient
-            msg = f"Hello {patient.name}, this is a reminder for your appointment tomorrow at {appointment.date.strftime('%H:%M')}."
+            patient = appointment.patient            # Send initial greeting if not yet greeted
+            send_patient_greeting_if_needed(patient, client)
+            msg = f"Hello {patient.name} 小朋友，溫馨提示：聽日 {appointment.date.strftime('%H:%M')} 有預約。"
             
             cal_link = generate_google_calendar_link(
-                title=f"Medical Appointment - {patient.name}",
+                title=f"醫務覆診 - {patient.name}",
                 start_dt=appointment.date,
                 description=appointment.description or "Medical Appointment"
             )
-            msg += f"\n\nAdd to Google Calendar: {cal_link}"
+            msg += f"\n\n加落Google Calendar: {cal_link}"
             
             print(f"Sending reminder to {patient.name} ({patient.phone_number})...")
             result = client.send_message(patient.phone_number, msg)
@@ -41,15 +42,19 @@ def send_appointment_reminders(app):
 
 def send_daily_diary_reminders(app):
     """
-    Sends a daily reminder to all patients to fill out their e-diary.
+    Sends a daily reminder to patients who have e-diary reminders enabled.
     """
     with app.app_context():
-        patients = Patient.query.all()
+        # Only send to patients with send_ediary_reminders=True
+        patients = Patient.query.filter_by(send_ediary_reminders=True).all()
         client = BaileysClient()
 
-        msg = "Good morning! Please remember to send your daily e-diary entry. Just reply with your entry."
+        msg = "晚安！記得今日要填 e-diary 呀。直接喺度回覆就得。記得用心情、症狀、活動等資訊，幫助醫生更了解你嘅情況！"
 
         for patient in patients:
+            # Send initial greeting if not yet greeted
+            send_patient_greeting_if_needed(patient, client)
+            
             print(f"Sending diary reminder to {patient.name}...")
             client.send_message(patient.phone_number, msg)
 

@@ -80,6 +80,33 @@ def generate_google_calendar_link(title, start_dt, description=""):
     
     return f"{base_url}?{urllib.parse.urlencode(params)}"
 
+def send_patient_greeting_if_needed(patient, client=None):
+    """
+    Checks if a patient has been greeted yet. If not, sends the Cantonese
+    introductory message and marks 'greeted' as True in the database.
+    """
+    if patient.greeted:
+        return False
+        
+    if client is None:
+        client = BaileysClient()
+        
+    greeting = (
+        f"你好 {patient.name}！我係醫務助手。😊\n\n"
+        "我會幫你記住預約時間同埋記錄你嘅電子日記。\n"
+        "• 如果有預約，我會喺預約之前發送溫馨提示俾你。\n"
+        "• 如果你想記錄電子日記，請喺訊息開頭加入「日記：」（例如：日記：今日覺得好返啲）。\n\n"
+        "如有任何查詢，隨時搵我哋！"
+    )
+    
+    print(f"Sending first-time greeting to {patient.name} ({patient.phone_number})...")
+    client.send_message(patient.phone_number, greeting)
+    
+    patient.greeted = True
+    from models import db
+    db.session.commit()
+    return True
+
 class BaileysClient:
     def __init__(self):
         self.base_url = 'http://127.0.0.1:3000' # Local Node.js service

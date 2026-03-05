@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from models import db, Patient, Appointment, DiaryEntry, hash_data
-from services import BaileysClient, generate_google_calendar_link, generate_birthday_card
+from services import BaileysClient, generate_google_calendar_link, generate_birthday_card, send_patient_greeting_if_needed
 import scheduler_tasks
 
 app = Flask(__name__)
@@ -148,11 +148,14 @@ def add_patient():
             flash('Error: Invalid birthdate format.', 'error')
             return redirect(url_for('index'))
 
+    send_ediary = request.form.get('send_ediary_reminders') == 'on'
+
     new_patient = Patient(
         name=name,
         phone_number=phone,
         birthdate=birthdate,
         description=description or None,
+        send_ediary_reminders=send_ediary
     )
     db.session.add(new_patient)
     db.session.commit()
@@ -203,19 +206,22 @@ def send_appointment_reminder_now(appointment_id):
     appointment = Appointment.query.get_or_404(appointment_id)
     patient = appointment.patient
     
-    msg = f"Hello {patient.name}, 提提您 {appointment.date.strftime('%m月%d日 %H:%M')} 要覆診啊！"
+    msg = f"你好 {patient.name} 小朋友，溫馨提示：{appointment.date.strftime('%m月%d日 %H:%M')} 有預約。"
     if appointment.description:
         msg += f" 備註: {appointment.description}"
     
     cal_link = generate_google_calendar_link(
-        title=f"覆診Appointment - {patient.name}",
+        title=f"醫務覆診 - {patient.name}",
         start_dt=appointment.date,
         description=appointment.description or "Medical Appointment"
     )
-    msg += f"\n\nAdd to Google Calendar: {cal_link}"
+    msg += f"\n\n加落 Google Calendar: {cal_link}"
     
     try:
         client = BaileysClient()
+        # Send initial greeting if not yet greeted
+        send_patient_greeting_if_needed(patient, client)
+        
         print(f"Sending manual reminder to {patient.name} ({patient.phone_number})...")
         result = client.send_message(patient.phone_number, msg)
         
@@ -266,6 +272,9 @@ def edit_patient(patient_id):
             return redirect(url_for('view_patient', patient_id=patient_id))
     else:
         patient.birthdate = None
+    
+    patient.send_ediary_reminders = request.form.get('send_ediary_reminders') == 'on'
+    
     db.session.commit()
     flash('Patient details updated.', 'success')
     return redirect(url_for('view_patient', patient_id=patient_id))
@@ -343,6 +352,9 @@ def whatsapp_webhook():
         if patient:
             client = BaileysClient()
             
+            # Send initial greeting if not yet greeted
+            send_patient_greeting_if_needed(patient, client)
+
             # Check length (max 500 characters)
             if len(message_content) > 500:
                 client.send_message(sender, "唔好意思，你輸入嘅內容超過咗500字元。請縮短內容後再發送。如果你有更加多嘢想同醫生講，可以直接喺Whatsapp搵佢！")
@@ -395,8 +407,8 @@ def create_scheduler():
     # Check for appointments every hour (or once a day)
     scheduler.add_job(func=scheduler_tasks.send_appointment_reminders, args=[app], trigger="interval", hours=1)
 
-    # Send diary reminder every day at 9:00 AM
-    scheduler.add_job(func=scheduler_tasks.send_daily_diary_reminders, args=[app], trigger="cron", hour=9, minute=0)
+    # Send diary reminder every day at 8:00 PM HK time
+    scheduler.add_job(func=scheduler_tasks.send_daily_diary_reminders, args=[app], trigger="cron", hour=20, minute=0)
 
     # Send birthday cards every day at 10:00 AM
     scheduler.add_job(func=scheduler_tasks.send_birthday_cards, args=[app], trigger="cron", hour=10, minute=0)

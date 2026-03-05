@@ -70,6 +70,12 @@ class Patient(db.Model):
     # Track whether a birthday card was already sent this calendar year
     birthday_card_sent_year = db.Column(db.Integer, nullable=True)
 
+    # Whether to send daily e-diary reminders
+    send_ediary_reminders = db.Column(db.Boolean, default=False, nullable=False)
+
+    # Track if the patient has received an initial greeting
+    greeted = db.Column(db.Boolean, default=False, nullable=False)
+
     appointments = db.relationship('Appointment', backref='patient', lazy=True)
     diary_entries = db.relationship('DiaryEntry', backref='patient', lazy=True)
 
