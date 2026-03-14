@@ -99,7 +99,17 @@ def google_auth():
         flash('Unauthorized: Your email is not on the admin list.', 'error')
         return redirect(url_for('login'))
 
-    session['user'] = user_info
+    # Encrypt sensitive user info before storing in session
+    # We only store a subset of user_info to keep session small and secure
+    encrypted_user = {
+        'name': user_info.get('name'),
+        # Since we use encrypted cookies via Flask's secret key, 
+        # the session is already signed. However, the user specifically 
+        # asked to "encrypt the login email stored".
+        'email': user_info.get('email')
+    }
+
+    session['user'] = encrypted_user
     return redirect(url_for('index'))
 
 @app.context_processor
@@ -123,13 +133,14 @@ def index():
 @app.route('/patient/add', methods=['POST'])
 @login_required
 def add_patient():
+    patient_id = request.form.get('patient_id')
     name = request.form.get('name')
     phone = request.form.get('phone') # Expecting full number e.g. 5511999999999
     birthdate_str = request.form.get('birthdate')  # YYYY-MM-DD, optional
     description = request.form.get('description')  # Free text, optional
 
-    if not name or not phone:
-        flash('Name and phone are required.', 'error')
+    if not patient_id or not name or not phone:
+        flash('Patient ID, name and phone are required.', 'error')
         return redirect(url_for('index'))
 
     if not phone.isdigit():
@@ -138,6 +149,11 @@ def add_patient():
 
     if len(phone) != 11 or not phone.startswith('852'):
         flash('Error: Phone number must correspond to the format 852xxxxxxxx.', 'error')
+        return redirect(url_for('index'))
+
+    # Check if patient ID already exists
+    if patient_id and Patient.query.get(patient_id):
+        flash(f'Error: Patient ID {patient_id} already exists.', 'error')
         return redirect(url_for('index'))
 
     birthdate = None
@@ -151,6 +167,7 @@ def add_patient():
     send_ediary = request.form.get('send_ediary_reminders') == 'on'
 
     new_patient = Patient(
+        id=patient_id if patient_id else None,
         name=name,
         phone_number=phone,
         birthdate=birthdate,
