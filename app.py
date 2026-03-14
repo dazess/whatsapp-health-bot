@@ -1,5 +1,6 @@
 import os
 import hmac
+import re
 from datetime import datetime, timedelta
 from functools import wraps
 from dotenv import load_dotenv
@@ -13,7 +14,7 @@ from authlib.integrations.flask_client import OAuth
 from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from models import db, Patient, Appointment, DiaryEntry, hash_data
+from models import db, Patient, Appointment, DiaryEntry, QualtricsResponse, SurveyLink, SurveyReminderLog, hash_data
 from services import BaileysClient, generate_google_calendar_link, generate_birthday_card, send_patient_greeting_if_needed
 import scheduler_tasks
 
@@ -52,6 +53,14 @@ google = oauth.register(
 ADMIN_EMAILS = os.getenv('ADMIN_EMAILS', '').split(',')
 # Clean up whitespace
 ADMIN_EMAILS = [email.strip() for email in ADMIN_EMAILS if email.strip()]
+PID_PATTERN = re.compile(r'^P\d{2}$')
+
+
+def normalize_pid(pid_value):
+    if not pid_value:
+        return None
+    pid = pid_value.strip().upper()
+    return pid if pid else None
 
 def login_required(f):
     @wraps(f)
@@ -127,20 +136,75 @@ def logout():
 @login_required
 def index():
     patients = Patient.query.all()
-    # Also fetch upcoming appointments for display if needed
-    return render_template('index.html', patients=patients)
+    surveys = SurveyLink.query.order_by(SurveyLink.created_at.desc()).all()
+    return render_template('index.html', patients=patients, surveys=surveys)
+
+
+@app.route('/survey/add', methods=['POST'])
+@login_required
+def add_survey_link():
+    title = (request.form.get('title') or '').strip()
+    url = (request.form.get('url') or '').strip()
+    qualtrics_survey_id = (request.form.get('qualtrics_survey_id') or '').strip() or None
+    pid_field = (request.form.get('pid_field') or '').strip() or None
+    is_active = request.form.get('is_active') == 'on'
+
+    if not title or not url:
+        flash('Survey title and link are required.', 'error')
+        return redirect(url_for('index'))
+
+    if not (url.startswith('http://') or url.startswith('https://')):
+        flash('Survey link must start with http:// or https://', 'error')
+        return redirect(url_for('index'))
+
+    survey = SurveyLink(
+        title=title,
+        url=url,
+        qualtrics_survey_id=qualtrics_survey_id,
+        pid_field=pid_field,
+        is_active=is_active,
+    )
+    db.session.add(survey)
+    db.session.commit()
+    flash('Survey link added.', 'success')
+    return redirect(url_for('index'))
+
+
+@app.route('/survey/toggle/<int:survey_id>', methods=['POST'])
+@login_required
+def toggle_survey_link(survey_id):
+    survey = SurveyLink.query.get_or_404(survey_id)
+    survey.is_active = not survey.is_active
+    db.session.commit()
+    flash(f"Survey '{survey.title}' is now {'active' if survey.is_active else 'inactive'}.", 'success')
+    return redirect(url_for('index'))
+
+
+@app.route('/survey/delete/<int:survey_id>', methods=['POST'])
+@login_required
+def delete_survey_link(survey_id):
+    survey = SurveyLink.query.get_or_404(survey_id)
+    SurveyReminderLog.query.filter_by(survey_link_id=survey.id).delete()
+    db.session.delete(survey)
+    db.session.commit()
+    flash('Survey link deleted.', 'success')
+    return redirect(url_for('index'))
 
 @app.route('/patient/add', methods=['POST'])
 @login_required
 def add_patient():
-    patient_id = request.form.get('patient_id')
+    pid = normalize_pid(request.form.get('pid'))
     name = request.form.get('name')
     phone = request.form.get('phone') # Expecting full number e.g. 5511999999999
     birthdate_str = request.form.get('birthdate')  # YYYY-MM-DD, optional
     description = request.form.get('description')  # Free text, optional
 
-    if not patient_id or not name or not phone:
-        flash('Patient ID, name and phone are required.', 'error')
+    if not pid or not name or not phone:
+        flash('PID, name and phone are required.', 'error')
+        return redirect(url_for('index'))
+
+    if not PID_PATTERN.match(pid):
+        flash('Error: PID must follow format P01 to P99.', 'error')
         return redirect(url_for('index'))
 
     if not phone.isdigit():
@@ -151,9 +215,9 @@ def add_patient():
         flash('Error: Phone number must correspond to the format 852xxxxxxxx.', 'error')
         return redirect(url_for('index'))
 
-    # Check if patient ID already exists
-    if patient_id and Patient.query.get(patient_id):
-        flash(f'Error: Patient ID {patient_id} already exists.', 'error')
+    existing_pid = Patient.query.filter_by(pid=pid).first()
+    if existing_pid:
+        flash(f'Error: PID {pid} already exists.', 'error')
         return redirect(url_for('index'))
 
     birthdate = None
@@ -165,15 +229,18 @@ def add_patient():
             return redirect(url_for('index'))
 
     send_ediary = request.form.get('send_ediary_reminders') == 'on'
+    send_survey = request.form.get('send_survey_reminders') == 'on'
 
     new_patient = Patient(
-        id=patient_id if patient_id else None,
+        pid=pid,
         name=name,
-        phone_number=phone,
         birthdate=birthdate,
         description=description or None,
-        send_ediary_reminders=send_ediary
+        send_ediary_reminders=send_ediary,
+        send_survey_reminders=send_survey,
     )
+    new_patient.phone_number = phone
+
     db.session.add(new_patient)
     db.session.commit()
     flash('Patient added successfully!', 'success')
@@ -278,6 +345,22 @@ def edit_appointment(appointment_id):
 @login_required
 def edit_patient(patient_id):
     patient = Patient.query.get_or_404(patient_id)
+    new_pid = normalize_pid(request.form.get('pid'))
+
+    if not new_pid:
+        flash('PID is required.', 'error')
+        return redirect(url_for('view_patient', patient_id=patient_id))
+
+    if not PID_PATTERN.match(new_pid):
+        flash('PID must follow format P01 to P99.', 'error')
+        return redirect(url_for('view_patient', patient_id=patient_id))
+
+    existing_pid = Patient.query.filter(Patient.pid == new_pid, Patient.id != patient.id).first()
+    if existing_pid:
+        flash(f'PID {new_pid} is already assigned to another patient.', 'error')
+        return redirect(url_for('view_patient', patient_id=patient_id))
+
+    patient.pid = new_pid
     patient.name = request.form.get('name', '').strip() or patient.name
     patient.description = request.form.get('description', '').strip() or None
     birthdate_str = request.form.get('birthdate', '').strip()
@@ -291,6 +374,7 @@ def edit_patient(patient_id):
         patient.birthdate = None
     
     patient.send_ediary_reminders = request.form.get('send_ediary_reminders') == 'on'
+    patient.send_survey_reminders = request.form.get('send_survey_reminders') == 'on'
     
     db.session.commit()
     flash('Patient details updated.', 'success')
@@ -363,8 +447,20 @@ def whatsapp_webhook():
         if not sender or not message_content:
                 return jsonify({'status': 'ignored', 'reason': 'missing_data'}), 400
 
-        # Find patient using hash lookup
-        patient = Patient.query.filter_by(phone_hash=hash_data(sender)).first()
+        # Shared phone numbers are allowed, so webhook matching can be ambiguous.
+        lookup_hash = hash_data(sender)
+        matched_patients = Patient.query.filter_by(phone_lookup_hash=lookup_hash).all()
+        if not matched_patients:
+            legacy_match = Patient.query.filter_by(phone_hash=lookup_hash).first()
+            if legacy_match:
+                matched_patients = [legacy_match]
+
+        if len(matched_patients) > 1:
+            client = BaileysClient()
+            client.send_message(sender, "唔好意思，呢個電話號碼綁定咗多過一位病人，系統暫時未能自動分辨。請直接聯絡診所同事處理。")
+            return jsonify({'status': 'ignored', 'reason': 'ambiguous_phone_match'}), 200
+
+        patient = matched_patients[0] if matched_patients else None
         
         if patient:
             client = BaileysClient()
@@ -402,6 +498,39 @@ def whatsapp_webhook():
 
 # --- Application Setup ---
 
+def seed_mock_patients():
+    """Idempotent seed for mock PID records P01-P10 sharing one phone number."""
+    shared_phone = '85252624849'
+    created = 0
+
+    for i in range(1, 11):
+        pid = f'P{i:02d}'
+        if Patient.query.filter_by(pid=pid).first():
+            continue
+
+        patient = Patient(
+            pid=pid,
+            name=f'Mock Patient {pid}',
+            description='Mock record for Qualtrics survey reminder testing.',
+            send_ediary_reminders=False,
+            send_survey_reminders=True,
+        )
+        patient.phone_number = shared_phone
+        db.session.add(patient)
+        created += 1
+
+    if created:
+        db.session.commit()
+        print(f"Seeded {created} mock patients (P01-P10) with shared phone {shared_phone}.")
+
+
+@app.route('/admin/seed_mock_patients', methods=['POST'])
+@login_required
+def seed_mock_patients_route():
+    seed_mock_patients()
+    flash('Mock patients P01-P10 seeding completed.', 'success')
+    return redirect(url_for('index'))
+
 def _migrate_db():
     """Add new columns to existing SQLite database if they are missing."""
     from sqlalchemy import text
@@ -411,12 +540,44 @@ def _migrate_db():
             ("birthdate", "ALTER TABLE patient ADD COLUMN birthdate DATE"),
             ("description", "ALTER TABLE patient ADD COLUMN description TEXT"),
             ("birthday_card_sent_year", "ALTER TABLE patient ADD COLUMN birthday_card_sent_year INTEGER"),
+            ("pid", "ALTER TABLE patient ADD COLUMN pid VARCHAR(20)"),
+            ("phone_lookup_hash", "ALTER TABLE patient ADD COLUMN phone_lookup_hash VARCHAR(64)"),
+            ("send_survey_reminders", "ALTER TABLE patient ADD COLUMN send_survey_reminders BOOLEAN NOT NULL DEFAULT 1"),
+            ("last_survey_reminder_date", "ALTER TABLE patient ADD COLUMN last_survey_reminder_date DATE"),
         ]
         for col, sql in migrations:
             if col not in existing:
                 conn.execute(text(sql))
                 print(f"DB migration: added column '{col}' to patient table.")
+
+        # Best-effort indexes for PID and phone lookup.
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_patient_pid ON patient(pid) WHERE pid IS NOT NULL"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_patient_phone_lookup_hash ON patient(phone_lookup_hash)"))
         conn.commit()
+
+    # Ensure new lookup hashes exist for old rows.
+    updated = False
+    for patient in Patient.query.all():
+        if not patient.phone_lookup_hash and patient.phone_number:
+            patient.phone_lookup_hash = hash_data(patient.phone_number)
+            updated = True
+    if updated:
+        db.session.commit()
+
+    # Ensure the new response-tracking table exists for older databases.
+    QualtricsResponse.__table__.create(db.engine, checkfirst=True)
+    SurveyLink.__table__.create(db.engine, checkfirst=True)
+    SurveyReminderLog.__table__.create(db.engine, checkfirst=True)
+
+    with db.engine.connect() as conn:
+        existing_qr_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(qualtrics_response)")).fetchall()]
+        if 'survey_code' not in existing_qr_cols:
+            conn.execute(text("ALTER TABLE qualtrics_response ADD COLUMN survey_code VARCHAR(100)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_qualtrics_response_survey_code ON qualtrics_response(survey_code)"))
+            conn.commit()
+
+    # As requested: add mock P01-P10 patients if missing.
+    seed_mock_patients()
 
 
 def create_scheduler():
@@ -429,6 +590,9 @@ def create_scheduler():
 
     # Send birthday cards every day at 10:00 AM
     scheduler.add_job(func=scheduler_tasks.send_birthday_cards, args=[app], trigger="cron", hour=10, minute=0)
+
+    # Sync Qualtrics responses and remind non-responders daily at 9:00 AM
+    scheduler.add_job(func=scheduler_tasks.send_daily_survey_reminders, args=[app], trigger="cron", hour=9, minute=0)
 
     scheduler.start()
 
