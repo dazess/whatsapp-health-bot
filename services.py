@@ -149,3 +149,71 @@ class BaileysClient:
                 "status": "error",
                 "error": str(e),
             }
+
+
+class QualtricsClient:
+    """Minimal Qualtrics responses client for PID matching workflows."""
+
+    def __init__(self):
+        self.base_url = os.getenv('QUALTRICS_BASE_URL', '').strip().rstrip('/')
+        self.api_token = os.getenv('QUALTRICS_API_TOKEN', '').strip()
+        self.survey_id = os.getenv('QUALTRICS_SURVEY_ID', '').strip()
+        self.pid_field = os.getenv('QUALTRICS_PID_FIELD', 'PID').strip()
+
+    def is_configured(self):
+        return bool(self.base_url and self.api_token and self.survey_id)
+
+    def fetch_responses(self, survey_id=None, page_size=100):
+        """
+        Fetches responses from Qualtrics list-responses endpoint.
+        Returns a list of dictionaries with response data.
+        """
+        if not self.is_configured() and not survey_id:
+            raise ValueError('Qualtrics client is not configured. Set QUALTRICS_BASE_URL, QUALTRICS_API_TOKEN, QUALTRICS_SURVEY_ID.')
+
+        target_survey_id = survey_id or self.survey_id
+        if not target_survey_id:
+            raise ValueError('survey_id is required when QUALTRICS_SURVEY_ID is not configured.')
+
+        url = f"{self.base_url}/API/v3/surveys/{target_survey_id}/responses"
+        headers = {'X-API-TOKEN': self.api_token}
+        offset = None
+        responses = []
+
+        while True:
+            params = {'limit': page_size}
+            if offset:
+                params['offset'] = offset
+
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            data = resp.json()
+            if not resp.ok:
+                raise RuntimeError(f"Qualtrics API error {resp.status_code}: {data}")
+
+            result = data.get('result', {})
+            elements = result.get('elements', [])
+            responses.extend(elements)
+
+            offset = result.get('nextOffset')
+            if not offset:
+                break
+
+        return responses
+
+    def extract_pid(self, response_item, pid_field_override=None):
+        """Extract PID from common Qualtrics response shapes."""
+        field_name = (pid_field_override or self.pid_field or 'PID').strip()
+        values = response_item.get('values', {}) if isinstance(response_item, dict) else {}
+
+        pid = None
+        if isinstance(values, dict):
+            pid = values.get(field_name) or values.get(field_name.lower())
+
+        if not pid and isinstance(response_item, dict):
+            pid = response_item.get(field_name) or response_item.get(field_name.lower())
+
+        if pid is None:
+            return None
+
+        pid = str(pid).strip().upper()
+        return pid or None
