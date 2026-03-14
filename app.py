@@ -1,6 +1,8 @@
 import os
 import hmac
 import re
+import csv
+import io
 from datetime import datetime, timedelta
 from functools import wraps
 from dotenv import load_dotenv
@@ -189,6 +191,131 @@ def delete_survey_link(survey_id):
     db.session.commit()
     flash('Survey link deleted.', 'success')
     return redirect(url_for('index'))
+
+@app.route('/survey/<int:survey_id>/upload_responses', methods=['POST'])
+@login_required
+def upload_survey_responses(survey_id):
+    """
+    Accept a Qualtrics CSV export and populate QualtricsResponse records.
+    This is the API-free alternative: download the responses CSV from the
+    Qualtrics website and upload it here instead of using the Qualtrics API.
+    """
+    survey = SurveyLink.query.get_or_404(survey_id)
+
+    if 'csv_file' not in request.files:
+        flash('No file selected.', 'error')
+        return redirect(url_for('index'))
+
+    f = request.files['csv_file']
+    if not f.filename or not f.filename.lower().endswith('.csv'):
+        flash('Please upload a CSV (.csv) file.', 'error')
+        return redirect(url_for('index'))
+
+    try:
+        content = f.read().decode('utf-8-sig')  # utf-8-sig strips the BOM that Excel adds
+        reader = csv.DictReader(io.StringIO(content))
+        all_rows = list(reader)
+
+        # Qualtrics CSV exports have 3 header rows:
+        #   Row 1 – column IDs (used as dict keys by DictReader)
+        #   Row 2 – human-readable question text  (e.g. "Response ID", "Patient ID")
+        #   Row 3 – ImportId JSON strings         (e.g. {"ImportId":"responseId"})
+        # Detect and skip those metadata rows: scan until we find the first row
+        # whose first value starts with '{' (the ImportId row), then skip
+        # everything up to and including that row.
+        skip = 0
+        for i, row in enumerate(all_rows[:3]):
+            first_val = next(iter(row.values()), '')
+            if first_val.startswith('{'):
+                skip = i + 1  # skip the label row(s) and this ImportId row
+                break
+        data_rows = all_rows[skip:]
+
+        if not data_rows:
+            flash('The CSV file contains no data rows. Please check the file and try again.', 'error')
+            return redirect(url_for('index'))
+
+        pid_field = (survey.pid_field or 'PID').strip()
+        survey_code = survey.qualtrics_survey_id or f'survey-{survey.id}'
+        now = datetime.utcnow()
+        synced = 0
+        skipped = 0
+
+        for i, row in enumerate(data_rows):
+            # Find the PID value – try exact name then case-insensitive
+            pid_raw = row.get(pid_field) or row.get(pid_field.lower()) or row.get(pid_field.upper())
+            if pid_raw is None:
+                for col, val in row.items():
+                    if col.lower() == pid_field.lower():
+                        pid_raw = val
+                        break
+
+            if not pid_raw or not str(pid_raw).strip():
+                skipped += 1
+                continue
+
+            pid = str(pid_raw).strip().upper()
+            if not pid:
+                skipped += 1
+                continue
+
+            # Build a stable response ID from ResponseId column or fall back to row index
+            response_id_raw = (
+                row.get('ResponseId') or row.get('responseId') or
+                row.get('response_id') or f'upload-row-{i}'
+            )
+            response_id = f'{survey_code}:{response_id_raw}'
+
+            recorded_at = None
+            for ts_col in ('RecordedDate', 'recordedDate', 'EndDate', 'endDate'):
+                raw_ts = row.get(ts_col)
+                if raw_ts:
+                    try:
+                        recorded_at = datetime.fromisoformat(str(raw_ts).replace('Z', '+00:00'))
+                    except ValueError:
+                        pass
+                    break
+
+            existing = QualtricsResponse.query.filter_by(qualtrics_response_id=response_id).first()
+            if existing:
+                existing.survey_code = survey_code
+                existing.pid = pid
+                existing.recorded_at = recorded_at or existing.recorded_at
+                existing.last_seen_at = now
+            else:
+                db.session.add(QualtricsResponse(
+                    survey_code=survey_code,
+                    pid=pid,
+                    qualtrics_response_id=response_id,
+                    recorded_at=recorded_at,
+                    last_seen_at=now,
+                ))
+            synced += 1
+
+        if synced:
+            db.session.commit()
+
+        flash(
+            f'CSV uploaded: {synced} response(s) recorded, {skipped} row(s) skipped (no PID).',
+            'success',
+        )
+    except Exception as e:
+        flash(f'Error processing CSV: {str(e)}', 'error')
+
+    return redirect(url_for('index'))
+
+
+@app.route('/admin/run_survey_reminders', methods=['POST'])
+@login_required
+def run_survey_reminders_now():
+    """Manually trigger the daily survey reminder job from the dashboard."""
+    try:
+        scheduler_tasks.send_daily_survey_reminders(app)
+        flash('Survey reminders job completed.', 'success')
+    except Exception as e:
+        flash(f'Error running survey reminders: {str(e)}', 'error')
+    return redirect(url_for('index'))
+
 
 @app.route('/patient/add', methods=['POST'])
 @login_required

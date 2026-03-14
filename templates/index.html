@@ -201,6 +201,12 @@
 
                 <section id="surveys" class="mb-4">
                     <h3 class="section-title">Survey Center</h3>
+                    <div class="alert alert-info py-2 px-3 mt-3 mb-2" style="border-radius:10px; font-size:.93rem;">
+                        <strong>API-free mode:</strong> Export responses from the Qualtrics website
+                        (<em>Data &amp; Analysis → Export &amp; Import → Export Data → CSV</em>)
+                        and upload the file using the <strong>Upload CSV</strong> button for each survey below.
+                        Patients who have already responded will be skipped when reminders are sent.
+                    </div>
                     <div class="dashboard-card p-4 mt-3 mb-3">
                         <form action="/survey/add" method="POST">
                             <div class="row g-3">
@@ -262,6 +268,13 @@
                                                     {{ 'Deactivate' if survey.is_active else 'Activate' }}
                                                 </button>
                                             </form>
+                                            <form action="/survey/{{ survey.id }}/upload_responses" method="POST" enctype="multipart/form-data" class="d-inline">
+                                                <label class="btn btn-sm btn-outline-secondary ms-1 mb-0" title="Upload Qualtrics CSV export to mark responded PIDs">
+                                                    Upload CSV
+                                                    <input type="file" name="csv_file" accept=".csv" class="d-none"
+                                                           onchange="this.closest('form').submit()">
+                                                </label>
+                                            </form>
                                             <form action="/survey/delete/{{ survey.id }}" method="POST" class="d-inline" onsubmit="return confirm('Delete this survey link?');">
                                                 <button type="submit" class="btn btn-sm btn-outline-danger ms-1">Delete</button>
                                             </form>
@@ -281,10 +294,16 @@
                 <section id="tools" class="mb-5">
                     <h3 class="section-title">Tools</h3>
                     <div class="dashboard-card p-4 mt-3">
-                        <form action="/admin/seed_mock_patients" method="POST"
-                              onsubmit="return confirm('Seed or refresh mock patients P01-P10 with shared phone 85252624849?');">
-                            <button type="submit" class="btn btn-outline-secondary btn-sm">Seed Mock P01-P10</button>
-                        </form>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <form action="/admin/seed_mock_patients" method="POST"
+                                  onsubmit="return confirm('Seed or refresh mock patients P01-P10 with shared phone 85252624849?');">
+                                <button type="submit" class="btn btn-outline-secondary btn-sm">Seed Mock P01-P10</button>
+                            </form>
+                            <form action="/admin/run_survey_reminders" method="POST"
+                                  onsubmit="return confirm('Send survey reminders now to all eligible patients?');">
+                                <button type="submit" class="btn btn-outline-primary btn-sm">Run Survey Reminders Now</button>
+                            </form>
+                        </div>
                     </div>
                 </section>
             </main>

@@ -205,11 +205,15 @@ def send_daily_survey_reminders(app):
 
         for survey in active_surveys:
             sync_result = sync_qualtrics_responses(app, survey)
+            # Use a consistent survey_code: prefer the Qualtrics Survey ID; fall back to
+            # 'survey-{id}' so that manually uploaded CSVs (which use the same fallback)
+            # are correctly matched even when no Qualtrics Survey ID is configured.
+            survey_code = survey.qualtrics_survey_id or (f'survey-{survey.id}' if survey.id is not None else None)
             responded_pids = set()
-            if survey.qualtrics_survey_id:
+            if survey_code:
                 responded_pids = {
                     row.pid.strip().upper()
-                    for row in QualtricsResponse.query.filter_by(survey_code=survey.qualtrics_survey_id).with_entities(QualtricsResponse.pid).all()
+                    for row in QualtricsResponse.query.filter_by(survey_code=survey_code).with_entities(QualtricsResponse.pid).all()
                     if row.pid
                 }
 
@@ -225,7 +229,7 @@ def send_daily_survey_reminders(app):
                 if not normalized_pid:
                     continue
 
-                if survey.qualtrics_survey_id and normalized_pid in responded_pids:
+                if normalized_pid in responded_pids:
                     continue
 
                 if survey.id:
