@@ -1,0 +1,46 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: SSH deploy & PM2 reload
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            PROJECT_DIR="/opt/whatsapp-health-bot/whatsapp-health-bot"
+
+            cd "$PROJECT_DIR"
+
+            # Pull latest code
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Update Python dependencies
+            source .venv/bin/activate
+            pip install -q -r requirements.txt
+
+            # Update Node dependencies for wa-service
+            cd wa-service
+            npm ci --omit=dev
+            cd ..
+
+            # Reload all PM2 processes gracefully (zero-downtime for web)
+            pm2 reload healthbot-web --update-env
+            pm2 restart healthbot-scheduler --update-env
+            pm2 restart healthbot-wa-service --update-env
+            pm2 save
+
+            echo "Deployment complete."
