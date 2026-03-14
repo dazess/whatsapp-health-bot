@@ -1,5 +1,7 @@
 import os
 import hmac
+import csv
+import io
 from datetime import datetime, timedelta
 from functools import wraps
 from dotenv import load_dotenv
@@ -13,7 +15,7 @@ from authlib.integrations.flask_client import OAuth
 from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from models import db, Patient, Appointment, DiaryEntry, hash_data
+from models import db, Patient, Appointment, DiaryEntry, Survey, SurveyCompletion, hash_data
 from services import BaileysClient, generate_google_calendar_link, generate_birthday_card, send_patient_greeting_if_needed
 import scheduler_tasks
 
@@ -346,6 +348,155 @@ def confirm_send_birthday_card(patient_id):
     
     return redirect(url_for('view_patient', patient_id=patient_id))
 
+# --- Survey Management Routes ---
+
+@app.route('/surveys')
+@login_required
+def surveys():
+    all_surveys = Survey.query.order_by(Survey.created_at.desc()).all()
+    all_patients = Patient.query.all()
+    return render_template('surveys.html', surveys=all_surveys, all_patients=all_patients)
+
+
+@app.route('/surveys/add', methods=['POST'])
+@login_required
+def add_survey():
+    name = request.form.get('name', '').strip()
+    link = request.form.get('link', '').strip()
+    pid_column = request.form.get('pid_column', 'PID').strip() or 'PID'
+    send_daily = request.form.get('send_daily_reminders') == 'on'
+
+    if not name or not link:
+        flash('Survey name and link are required.', 'error')
+        return redirect(url_for('surveys'))
+
+    survey = Survey(name=name, link=link, pid_column=pid_column, send_daily_reminders=send_daily)
+    db.session.add(survey)
+    db.session.commit()
+    flash('Survey added successfully!', 'success')
+    return redirect(url_for('surveys'))
+
+
+@app.route('/surveys/<int:survey_id>/edit', methods=['POST'])
+@login_required
+def edit_survey(survey_id):
+    survey = Survey.query.get_or_404(survey_id)
+    survey.name = request.form.get('name', '').strip() or survey.name
+    survey.link = request.form.get('link', '').strip() or survey.link
+    survey.pid_column = request.form.get('pid_column', '').strip() or survey.pid_column
+    survey.send_daily_reminders = request.form.get('send_daily_reminders') == 'on'
+    db.session.commit()
+    flash('Survey updated.', 'success')
+    return redirect(url_for('surveys'))
+
+
+@app.route('/surveys/<int:survey_id>/delete', methods=['POST'])
+@login_required
+def delete_survey(survey_id):
+    survey = Survey.query.get_or_404(survey_id)
+    db.session.delete(survey)
+    db.session.commit()
+    flash('Survey deleted.', 'success')
+    return redirect(url_for('surveys'))
+
+
+@app.route('/surveys/<int:survey_id>/upload', methods=['POST'])
+@login_required
+def upload_survey_csv(survey_id):
+    survey = Survey.query.get_or_404(survey_id)
+
+    if 'csv_file' not in request.files or request.files['csv_file'].filename == '':
+        flash('Please select a CSV file to upload.', 'error')
+        return redirect(url_for('surveys'))
+
+    file = request.files['csv_file']
+    if not file.filename.lower().endswith('.csv'):
+        flash('Please upload a CSV file (.csv).', 'error')
+        return redirect(url_for('surveys'))
+
+    try:
+        content = file.read().decode('utf-8-sig')  # Handle Excel BOM
+        reader = csv.DictReader(io.StringIO(content))
+
+        if survey.pid_column not in (reader.fieldnames or []):
+            available = ', '.join(reader.fieldnames or [])
+            flash(
+                f'Column "{survey.pid_column}" not found in CSV. '
+                f'Available columns: {available}',
+                'error'
+            )
+            return redirect(url_for('surveys'))
+
+        found_pids = set()
+        for row in reader:
+            pid_val = row.get(survey.pid_column, '').strip()
+            if pid_val:
+                try:
+                    found_pids.add(int(pid_val))
+                except ValueError:
+                    pass  # Skip non-integer or empty values
+
+        # Replace completions with fresh data from this upload
+        SurveyCompletion.query.filter_by(survey_id=survey_id).delete()
+        matched_count = 0
+        for pid in found_pids:
+            patient = Patient.query.get(pid)
+            if patient:
+                completion = SurveyCompletion(survey_id=survey_id, patient_id=pid)
+                db.session.add(completion)
+                matched_count += 1
+
+        survey.last_upload_at = datetime.utcnow()
+        db.session.commit()
+
+        flash(
+            f'CSV processed: {len(found_pids)} PID(s) found in file, '
+            f'{matched_count} matched to registered patients.',
+            'success'
+        )
+    except Exception as e:
+        flash(f'Error processing CSV: {str(e)}', 'error')
+
+    return redirect(url_for('surveys'))
+
+
+@app.route('/surveys/<int:survey_id>/send_reminders', methods=['POST'])
+@login_required
+def send_survey_reminders_now(survey_id):
+    survey = Survey.query.get_or_404(survey_id)
+
+    completed_ids = {c.patient_id for c in survey.completions}
+    pending = [p for p in Patient.query.all() if p.id not in completed_ids]
+
+    if not pending:
+        flash('All registered patients have already completed this survey! 🎉', 'success')
+        return redirect(url_for('surveys'))
+
+    client = BaileysClient()
+    sent = 0
+    failed = 0
+
+    for patient in pending:
+        msg = (
+            f"你好 {patient.name}！😊\n\n"
+            f"溫馨提示：請填寫以下問卷 ——\n"
+            f"📋 {survey.name}\n"
+            f"🔗 {survey.link}\n\n"
+            "如有任何疑問，歡迎聯絡我哋！多謝合作 🙏"
+        )
+        result = client.send_message(patient.phone_number, msg)
+        if result and result.get('status') != 'error':
+            sent += 1
+        else:
+            failed += 1
+
+    if failed:
+        flash(f'Reminders sent: {sent} succeeded, {failed} failed.', 'error')
+    else:
+        flash(f'Reminders sent to {sent} patient(s) successfully!', 'success')
+    return redirect(url_for('surveys'))
+
+
 # --- Webhook for Baileys Service (Handling Incoming Messages) ---
 
 @app.route('/webhook/whatsapp', methods=['POST'])
@@ -406,16 +557,20 @@ def _migrate_db():
     """Add new columns to existing SQLite database if they are missing."""
     from sqlalchemy import text
     with db.engine.connect() as conn:
-        existing = [row[1] for row in conn.execute(text("PRAGMA table_info(patient)")).fetchall()]
-        migrations = [
+        # --- patient table migrations ---
+        existing_patient = [row[1] for row in conn.execute(text("PRAGMA table_info(patient)")).fetchall()]
+        patient_migrations = [
             ("birthdate", "ALTER TABLE patient ADD COLUMN birthdate DATE"),
             ("description", "ALTER TABLE patient ADD COLUMN description TEXT"),
             ("birthday_card_sent_year", "ALTER TABLE patient ADD COLUMN birthday_card_sent_year INTEGER"),
         ]
-        for col, sql in migrations:
-            if col not in existing:
+        for col, sql in patient_migrations:
+            if col not in existing_patient:
                 conn.execute(text(sql))
                 print(f"DB migration: added column '{col}' to patient table.")
+
+        # --- survey table: created via db.create_all(), no extra columns needed yet ---
+
         conn.commit()
 
 
@@ -429,6 +584,9 @@ def create_scheduler():
 
     # Send birthday cards every day at 10:00 AM
     scheduler.add_job(func=scheduler_tasks.send_birthday_cards, args=[app], trigger="cron", hour=10, minute=0)
+
+    # Send survey reminders every day at 9:00 AM
+    scheduler.add_job(func=scheduler_tasks.send_survey_reminders, args=[app], trigger="cron", hour=9, minute=0)
 
     scheduler.start()
 

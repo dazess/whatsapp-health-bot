@@ -1,52 +1,49 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Patient Details</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-    <div class="container mt-5">
-        <a href="/" class="btn btn-secondary mb-3">&larr; Back to Dashboard</a>
+{% extends "base.html" %}
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            {% for category, message in messages %}
-              <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
-                {{ message }}
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-              </div>
-            {% endfor %}
-          {% endif %}
-        {% endwith %}
+{% block title %}{{ patient.name }} — Health Bot Admin{% endblock %}
+{% block page_title %}Patient Details{% endblock %}
 
-        <h1 class="mb-0">{{ patient.name }}</h1>
-        <p class="text-muted mb-3">
-            Phone: {{ patient.phone_number }}
-            <br>
-            <span class="badge bg-{{ 'success' if patient.send_ediary_reminders else 'secondary' }}">
-                {{ 'E-diary Reminders: ON' if patient.send_ediary_reminders else 'E-diary Reminders: OFF' }}
+{% block topbar_extra %}
+<a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>Back to Patients
+</a>
+{% endblock %}
+
+{% block content %}
+        <div class="d-flex align-items-center gap-3 mb-3">
+            <div>
+                <h2 class="mb-0">{{ patient.name }}</h2>
+                <p class="text-muted mb-0 small">
+                    PID: {{ patient.id }} &nbsp;|&nbsp;
+                    Phone: {{ patient.phone_number }}
+                </p>
+            </div>
+            <span class="badge rounded-pill bg-{{ 'success' if patient.send_ediary_reminders else 'secondary' }} ms-2">
+                {{ 'E-diary ON' if patient.send_ediary_reminders else 'E-diary OFF' }}
             </span>
-        </p>
+        </div>
 
         <div class="row">
             <!-- Left column: Appointments -->
             <div class="col-md-6">
                 <div class="card mb-4">
-                    <div class="card-header bg-primary text-white">Appointments</div>
+                    <div class="card-header bg-primary text-white">
+                        <i class="bi bi-calendar-check me-1"></i>Appointments
+                    </div>
                     <div class="card-body">
                         <form action="/appointment/add" method="POST" class="mb-3">
                             <input type="hidden" name="patient_id" value="{{ patient.id }}">
                             <div class="mb-2">
-                                <label>Date & Time</label>
+                                <label class="form-label small mb-0">Date &amp; Time</label>
                                 <input type="datetime-local" name="date" class="form-control" required>
                             </div>
                             <div class="mb-2">
-                                <label>Description</label>
+                                <label class="form-label small mb-0">Description</label>
                                 <input type="text" name="description" class="form-control">
                             </div>
-                            <button type="submit" class="btn btn-primary btn-sm">Schedule Appointment</button>
+                            <button type="submit" class="btn btn-primary btn-sm">
+                                <i class="bi bi-plus-circle me-1"></i>Schedule Appointment
+                            </button>
                         </form>
 
                         <ul class="list-group">
@@ -79,7 +76,7 @@
                                 </div>
                             </li>
                             {% else %}
-                            <li class="list-group-item">No appointments scheduled.</li>
+                            <li class="list-group-item text-muted fst-italic">No appointments scheduled.</li>
                             {% endfor %}
                         </ul>
                     </div>
@@ -92,12 +89,12 @@
                 <!-- Birthday Card -->
                 <div class="card mb-4">
                     <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
-                        <span>🎂 Birthday Card (Preview Enabled)</span>
+                        <span><i class="bi bi-cake2 me-1"></i>Birthday Card</span>
                         <div class="d-flex gap-2">
                             <button class="btn btn-sm btn-outline-dark py-0" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#editPatientForm">Edit Info</button>
                             <form action="{{ url_for('preview_birthday_card', patient_id=patient.id) }}" method="POST">
-                                <button type="submit" class="btn btn-sm btn-dark py-0">Send Now</button>
+                                <button type="submit" class="btn btn-sm btn-dark py-0">Preview &amp; Send</button>
                             </form>
                         </div>
                     </div>
@@ -161,7 +158,9 @@
 
                 <!-- E-Diary -->
                 <div class="card">
-                    <div class="card-header bg-success text-white">E-Diary Entries</div>
+                    <div class="card-header bg-success text-white">
+                        <i class="bi bi-journal-text me-1"></i>E-Diary Entries
+                    </div>
                     <div class="card-body">
                         <ul class="list-group">
                             {% for entry in diary_entries %}
@@ -170,7 +169,7 @@
                                 <p class="mb-0">{{ entry.content }}</p>
                             </li>
                             {% else %}
-                            <li class="list-group-item">No diary entries yet.</li>
+                            <li class="list-group-item text-muted fst-italic">No diary entries yet.</li>
                             {% endfor %}
                         </ul>
                     </div>
@@ -178,7 +177,4 @@
 
             </div>
         </div>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+{% endblock %}

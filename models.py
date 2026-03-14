@@ -101,3 +101,27 @@ class DiaryEntry(db.Model):
     content = db.Column(EncryptedText, nullable=False) # Encrypted
     patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
 
+
+class Survey(db.Model):
+    """Tracks a Qualtrics (or any) survey with its shareable link."""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(255), nullable=False)
+    link = db.Column(db.String(2000), nullable=False)
+    # Column header in the exported CSV that contains the patient PID
+    pid_column = db.Column(db.String(100), nullable=False, default='PID')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_upload_at = db.Column(db.DateTime, nullable=True)
+    send_daily_reminders = db.Column(db.Boolean, default=False, nullable=False)
+    completions = db.relationship(
+        'SurveyCompletion', backref='survey', lazy=True, cascade='all, delete-orphan'
+    )
+
+
+class SurveyCompletion(db.Model):
+    """Records that a patient has completed a survey (parsed from CSV upload)."""
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('survey.id'), nullable=False)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
+    recorded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint('survey_id', 'patient_id', name='uq_survey_patient'),)
+

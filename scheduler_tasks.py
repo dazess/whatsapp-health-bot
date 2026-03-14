@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from models import db, Patient, Appointment
+from models import db, Patient, Appointment, Survey, SurveyCompletion
 from services import BaileysClient, generate_google_calendar_link, generate_birthday_card, send_patient_greeting_if_needed
 
 def send_appointment_reminders(app):
@@ -96,3 +96,32 @@ def send_birthday_cards(app):
                 print(f"Birthday card sent to {patient.name}.")
             else:
                 print(f"Failed to send birthday card to {patient.name}: {result}")
+
+
+def send_survey_reminders(app):
+    """
+    Runs daily. For each survey with send_daily_reminders=True, sends a Cantonese
+    WhatsApp reminder to every registered patient who has NOT yet completed the survey
+    (i.e. their PID was not present in the last CSV upload).
+    """
+    with app.app_context():
+        surveys = Survey.query.filter_by(send_daily_reminders=True).all()
+        if not surveys:
+            return
+
+        client = BaileysClient()
+
+        for survey in surveys:
+            completed_ids = {c.patient_id for c in survey.completions}
+            pending_patients = [p for p in Patient.query.all() if p.id not in completed_ids]
+
+            for patient in pending_patients:
+                msg = (
+                    f"你好 {patient.name}！😊\n\n"
+                    f"溫馨提示：請填寫以下問卷 ——\n"
+                    f"📋 {survey.name}\n"
+                    f"🔗 {survey.link}\n\n"
+                    "如有任何疑問，歡迎聯絡我哋！多謝合作 🙏"
+                )
+                print(f"Sending survey reminder to {patient.name} for survey '{survey.name}'...")
+                client.send_message(patient.phone_number, msg)

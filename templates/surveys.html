@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% block title %}Surveys — Health Bot Admin{% endblock %}
+{% block page_title %}Survey Management{% endblock %}
+
+{% block content %}
+<!-- ── Add Survey ─────────────────────────── -->
+<div class="card mb-4">
+    <div class="card-header bg-primary text-white d-flex align-items-center gap-2">
+        <i class="bi bi-plus-circle-fill"></i> Add New Survey
+    </div>
+    <div class="card-body">
+        <form action="{{ url_for('add_survey') }}" method="POST">
+            <div class="row g-3 mb-3">
+                <div class="col-md-4">
+                    <label class="form-label small text-muted mb-0">Survey Name</label>
+                    <input type="text" class="form-control" name="name" placeholder="e.g. Monthly Health Check Q1 2025" required>
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label small text-muted mb-0">Survey Link (shared with patients)</label>
+                    <input type="url" class="form-control" name="link" placeholder="https://..." required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small text-muted mb-0">PID Column in CSV <span class="text-muted">(default: PID)</span></label>
+                    <input type="text" class="form-control" name="pid_column" placeholder="PID">
+                </div>
+            </div>
+            <div class="row g-3 mb-3">
+                <div class="col-auto">
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" name="send_daily_reminders" id="sendDailyNew">
+                        <label class="form-check-label small" for="sendDailyNew">
+                            Send daily Cantonese reminders to non-completers
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-plus-circle me-1"></i>Add Survey
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- ── Survey List ─────────────────────────── -->
+{% if surveys %}
+{% for survey in surveys %}
+{% set completed_ids = survey.completions | map(attribute='patient_id') | list %}
+{% set total = all_patients | length %}
+{% set done = completed_ids | length %}
+{% set pending_count = total - done %}
+
+<div class="card mb-4">
+    <div class="card-header bg-white d-flex align-items-center gap-2 flex-wrap">
+        <i class="bi bi-clipboard2-check-fill text-primary fs-5"></i>
+        <span class="fw-semibold">{{ survey.name }}</span>
+        {% if survey.send_daily_reminders %}
+        <span class="badge bg-success ms-1"><i class="bi bi-bell-fill me-1"></i>Daily Reminders ON</span>
+        {% else %}
+        <span class="badge bg-secondary ms-1">Daily Reminders OFF</span>
+        {% endif %}
+        <span class="ms-auto text-muted small">Created {{ survey.created_at.strftime('%Y-%m-%d') }}</span>
+    </div>
+
+    <div class="card-body">
+        <!-- Survey link + stats -->
+        <div class="row g-3 mb-3">
+            <div class="col-md-7">
+                <label class="form-label text-muted small mb-1">Survey Link</label>
+                <div class="input-group">
+                    <input type="text" class="form-control form-control-sm bg-light" value="{{ survey.link }}" readonly>
+                    <a href="{{ survey.link }}" target="_blank" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-box-arrow-up-right"></i>
+                    </a>
+                </div>
+            </div>
+            <div class="col-md-5">
+                <label class="form-label text-muted small mb-1">Completion Progress</label>
+                <div class="d-flex align-items-center gap-2">
+                    <div class="progress flex-grow-1" style="height: 10px;">
+                        <div class="progress-bar bg-success" role="progressbar"
+                             style="width: {{ (done / total * 100)|int if total > 0 else 0 }}%"></div>
+                    </div>
+                    <span class="small text-muted">{{ done }}/{{ total }}</span>
+                </div>
+                <div class="small text-muted mt-1">
+                    {% if survey.last_upload_at %}
+                    Last upload: {{ survey.last_upload_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% else %}
+                    No CSV uploaded yet
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="d-flex flex-wrap gap-2 mb-3">
+            <!-- Upload CSV -->
+            <form action="{{ url_for('upload_survey_csv', survey_id=survey.id) }}" method="POST"
+                  enctype="multipart/form-data" class="d-flex gap-2 align-items-center">
+                <input type="file" name="csv_file" accept=".csv" class="form-control form-control-sm" style="max-width:240px;" required>
+                <button type="submit" class="btn btn-sm btn-outline-info">
+                    <i class="bi bi-upload me-1"></i>Upload Qualtrics CSV
+                </button>
+            </form>
+
+            <!-- Send Reminders Now -->
+            <form action="{{ url_for('send_survey_reminders_now', survey_id=survey.id) }}" method="POST">
+                <button type="submit" class="btn btn-sm btn-outline-warning"
+                        onclick="return confirm('Send Cantonese reminders to {{ pending_count }} patient(s) who have not completed this survey?');">
+                    <i class="bi bi-whatsapp me-1"></i>Send Reminders Now
+                    {% if pending_count > 0 %}
+                    <span class="badge bg-warning text-dark ms-1">{{ pending_count }}</span>
+                    {% endif %}
+                </button>
+            </form>
+
+            <!-- Edit (collapsible) -->
+            <button class="btn btn-sm btn-outline-secondary" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#editSurvey{{ survey.id }}">
+                <i class="bi bi-pencil me-1"></i>Edit
+            </button>
+
+            <!-- Delete -->
+            <form action="{{ url_for('delete_survey', survey_id=survey.id) }}" method="POST"
+                  onsubmit="return confirm('Delete survey &quot;{{ survey.name }}&quot; and all its completion records?');">
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-trash me-1"></i>Delete
+                </button>
+            </form>
+        </div>
+
+        <!-- Edit form (collapse) -->
+        <div class="collapse" id="editSurvey{{ survey.id }}">
+            <div class="border rounded p-3 bg-light">
+                <form action="{{ url_for('edit_survey', survey_id=survey.id) }}" method="POST">
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-4">
+                            <label class="form-label small mb-0">Name</label>
+                            <input type="text" name="name" class="form-control form-control-sm" value="{{ survey.name }}" required>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label small mb-0">Link</label>
+                            <input type="url" name="link" class="form-control form-control-sm" value="{{ survey.link }}" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-0">PID Column</label>
+                            <input type="text" name="pid_column" class="form-control form-control-sm" value="{{ survey.pid_column }}">
+                        </div>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" name="send_daily_reminders"
+                               id="editDaily{{ survey.id }}" {% if survey.send_daily_reminders %}checked{% endif %}>
+                        <label class="form-check-label small" for="editDaily{{ survey.id }}">
+                            Send daily Cantonese reminders to non-completers
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Save Changes</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Completion Details (collapsible) -->
+        <div>
+            <button class="btn btn-sm btn-link text-decoration-none p-0 mt-2" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#completionDetail{{ survey.id }}">
+                <i class="bi bi-chevron-down me-1"></i>Show completion details
+            </button>
+            <div class="collapse mt-2" id="completionDetail{{ survey.id }}">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <h6 class="small fw-bold text-success mb-2"><i class="bi bi-check-circle-fill me-1"></i>Completed ({{ done }})</h6>
+                        {% if done %}
+                        <ul class="list-group list-group-flush small">
+                            {% for patient in all_patients %}
+                            {% if patient.id in completed_ids %}
+                            <li class="list-group-item px-0 py-1 border-0">
+                                <i class="bi bi-check2 text-success me-1"></i>
+                                <a href="{{ url_for('view_patient', patient_id=patient.id) }}" class="text-decoration-none">{{ patient.name }}</a>
+                                <span class="text-muted ms-1">(PID {{ patient.id }})</span>
+                            </li>
+                            {% endif %}
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        <p class="text-muted small fst-italic">None yet. Upload a CSV to update.</p>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <h6 class="small fw-bold text-danger mb-2"><i class="bi bi-x-circle-fill me-1"></i>Pending ({{ pending_count }})</h6>
+                        {% if pending_count %}
+                        <ul class="list-group list-group-flush small">
+                            {% for patient in all_patients %}
+                            {% if patient.id not in completed_ids %}
+                            <li class="list-group-item px-0 py-1 border-0">
+                                <i class="bi bi-dash-circle text-danger me-1"></i>
+                                <a href="{{ url_for('view_patient', patient_id=patient.id) }}" class="text-decoration-none">{{ patient.name }}</a>
+                                <span class="text-muted ms-1">(PID {{ patient.id }})</span>
+                            </li>
+                            {% endif %}
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        <p class="text-muted small fst-italic">🎉 All patients completed!</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+{% else %}
+<div class="text-center text-muted py-5">
+    <i class="bi bi-clipboard2-x fs-1 d-block mb-2"></i>
+    No surveys added yet. Use the form above to add your first survey.
+</div>
+{% endif %}
+
+<!-- ── How to use ─────────────────────────── -->
+<div class="card mt-2">
+    <div class="card-header bg-light">
+        <i class="bi bi-info-circle me-1"></i><strong>How to use the CSV upload</strong>
+    </div>
+    <div class="card-body small text-muted">
+        <ol class="mb-0">
+            <li>In Qualtrics, go to your survey → <strong>Data &amp; Analysis</strong> → <strong>Export &amp; Import</strong> → <strong>Export Data</strong>.</li>
+            <li>Choose <strong>CSV</strong> format and download the file.</li>
+            <li>Make sure the CSV has a column named <strong>PID</strong> (or whatever you configured above) that contains the patient ID numbers matching your registered patients.</li>
+            <li>Upload the CSV above. The system will match PIDs to patients and identify who still needs to fill in the survey.</li>
+            <li>Use <em>Send Reminders Now</em> to immediately send Cantonese WhatsApp messages to all non-completers, or enable <em>Daily Reminders</em> to automate this every morning.</li>
+        </ol>
+    </div>
+</div>
+{% endblock %}
