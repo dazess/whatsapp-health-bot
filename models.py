@@ -2,10 +2,10 @@ import os
 import hashlib
 import uuid
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
 from sqlalchemy.types import TypeDecorator, String, Text
 from sqlalchemy import UniqueConstraint
 from cryptography.fernet import Fernet
+from time_utils import now_gmt8_naive
 
 db = SQLAlchemy()
 
@@ -81,9 +81,6 @@ class Patient(db.Model):
     # Track whether a birthday card was already sent this calendar year
     birthday_card_sent_year = db.Column(db.Integer, nullable=True)
 
-    # Whether to send daily e-diary reminders
-    send_ediary_reminders = db.Column(db.Boolean, default=False, nullable=False)
-
     # Whether to send daily Qualtrics survey reminders
     send_survey_reminders = db.Column(db.Boolean, default=True, nullable=False)
 
@@ -94,7 +91,6 @@ class Patient(db.Model):
     greeted = db.Column(db.Boolean, default=False, nullable=False)
 
     appointments = db.relationship('Appointment', backref='patient', lazy=True)
-    diary_entries = db.relationship('DiaryEntry', backref='patient', lazy=True)
 
     @property
     def phone_number(self):
@@ -113,12 +109,6 @@ class Appointment(db.Model):
     patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
     reminded = db.Column(db.Boolean, default=False)
 
-class DiaryEntry(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    date = db.Column(db.DateTime, default=datetime.utcnow)
-    content = db.Column(EncryptedText, nullable=False) # Encrypted
-    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
-
 
 class QualtricsResponse(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -126,7 +116,7 @@ class QualtricsResponse(db.Model):
     pid = db.Column(db.String(20), nullable=False, index=True)
     qualtrics_response_id = db.Column(db.String(100), unique=True, nullable=False)
     recorded_at = db.Column(db.DateTime, nullable=True)
-    last_seen_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = db.Column(db.DateTime, default=now_gmt8_naive, nullable=False)
 
 
 class SurveyLink(db.Model):
@@ -136,7 +126,7 @@ class SurveyLink(db.Model):
     qualtrics_survey_id = db.Column(db.String(100), nullable=True)
     pid_field = db.Column(db.String(50), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=now_gmt8_naive, nullable=False)
 
 
 class SurveyReminderLog(db.Model):
@@ -144,9 +134,48 @@ class SurveyReminderLog(db.Model):
     patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
     survey_link_id = db.Column(db.Integer, db.ForeignKey('survey_link.id'), nullable=False)
     sent_date = db.Column(db.Date, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=now_gmt8_naive, nullable=False)
 
     __table_args__ = (
         UniqueConstraint('patient_id', 'survey_link_id', 'sent_date', name='uq_survey_reminder_daily'),
     )
+
+
+class SurveyReminderEvent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False, index=True)
+    survey_code = db.Column(db.String(200), nullable=False, index=True)
+    sent_date = db.Column(db.Date, nullable=False)
+    created_at = db.Column(db.DateTime, default=now_gmt8_naive, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('patient_id', 'survey_code', 'sent_date', name='uq_survey_event_daily'),
+    )
+
+
+class SurveyReminderEscalation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False, index=True)
+    survey_code = db.Column(db.String(200), nullable=False, index=True)
+    reminder_count = db.Column(db.Integer, nullable=False)
+    recipients = db.Column(db.Text, nullable=True)
+    alerted_at = db.Column(db.DateTime, default=now_gmt8_naive, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('patient_id', 'survey_code', name='uq_survey_escalation_once'),
+    )
+
+
+class SurveyLinkOverride(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    survey_code = db.Column(db.String(200), unique=True, nullable=False, index=True)
+    survey_link = db.Column(db.String(1024), nullable=False)
+    updated_at = db.Column(db.DateTime, default=now_gmt8_naive, onupdate=now_gmt8_naive, nullable=False)
+
+
+class AppSetting(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    setting_key = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    setting_value = db.Column(db.Text, nullable=True)
+    updated_at = db.Column(db.DateTime, default=now_gmt8_naive, onupdate=now_gmt8_naive, nullable=False)
 

@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'healthbot-web',
       cwd: '/opt/whatsapp-health-bot/whatsapp-health-bot',
-      script: 'gunicorn',
+      script: '/opt/whatsapp-health-bot/whatsapp-health-bot/.venv/bin/gunicorn',
       args: '--config gunicorn.conf.py wsgi:app',
       interpreter: 'none',
       env: {
@@ -17,7 +17,7 @@ module.exports = {
     {
       name: 'healthbot-scheduler',
       cwd: '/opt/whatsapp-health-bot/whatsapp-health-bot',
-      script: 'python3',
+      script: '/opt/whatsapp-health-bot/whatsapp-health-bot/.venv/bin/python',
       args: 'scheduler_runner.py',
       env: {
         FLASK_ENV: 'production',

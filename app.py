@@ -1,23 +1,27 @@
 import os
 import hmac
 import re
-import csv
-import io
+import time
 from datetime import datetime, timedelta
 from functools import wraps
 from dotenv import load_dotenv
 
 # Load .env relative to this file so it works regardless of working directory
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
+os.environ['TZ'] = 'Etc/GMT-8'
+if hasattr(time, 'tzset'):
+    time.tzset()
 
 from flask import Flask, session, request, jsonify, render_template, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from authlib.integrations.flask_client import OAuth
 from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.middleware.proxy_fix import ProxyFix
+from sqlalchemy import extract, or_
 
-from models import db, Patient, Appointment, DiaryEntry, QualtricsResponse, SurveyLink, SurveyReminderLog, hash_data
+from models import db, Patient, Appointment, QualtricsResponse, SurveyLinkOverride, SurveyReminderEvent, SurveyReminderEscalation, AppSetting, hash_data
 from services import BaileysClient, generate_google_calendar_link, generate_birthday_card, send_patient_greeting_if_needed
+from time_utils import now_gmt8, today_gmt8
 import scheduler_tasks
 
 app = Flask(__name__)
@@ -63,6 +67,36 @@ def normalize_pid(pid_value):
         return None
     pid = pid_value.strip().upper()
     return pid if pid else None
+
+
+def normalize_hk_phone(phone_value):
+    phone = re.sub(r'\s+', '', phone_value or '')
+    return phone if phone else None
+
+
+def normalize_phone_list(raw_value):
+    numbers = []
+    seen = set()
+
+    for part in str(raw_value or '').split(','):
+        phone = normalize_hk_phone(part)
+        if not phone:
+            continue
+        if not phone.isdigit() or len(phone) != 11 or not phone.startswith('852'):
+            raise ValueError('Each number must use format 852xxxxxxxx.')
+        if phone in seen:
+            continue
+        numbers.append(phone)
+        seen.add(phone)
+
+    return numbers
+
+
+def get_staff_alert_numbers_value():
+    setting = AppSetting.query.filter_by(setting_key='staff_alert_numbers').first()
+    if setting and setting.setting_value:
+        return setting.setting_value
+    return os.getenv('STAFF_ALERT_NUMBERS', '').strip()
 
 def login_required(f):
     @wraps(f)
@@ -125,7 +159,7 @@ def google_auth():
 
 @app.context_processor
 def inject_now():
-    return {'now': datetime.now()}
+    return {'now': now_gmt8().replace(tzinfo=None)}
 
 @app.route('/logout')
 def logout():
@@ -138,171 +172,31 @@ def logout():
 @login_required
 def index():
     patients = Patient.query.all()
-    surveys = SurveyLink.query.order_by(SurveyLink.created_at.desc()).all()
-    return render_template('index.html', patients=patients, surveys=surveys)
+    survey_overview = scheduler_tasks.get_sftp_survey_overview()
+    staff_alert_numbers_value = get_staff_alert_numbers_value()
+    now = today_gmt8()
+    birthday_pending = Patient.query.filter(
+        Patient.birthdate.isnot(None),
+        extract('month', Patient.birthdate) == now.month,
+        extract('day', Patient.birthdate) == now.day,
+        or_(
+            Patient.birthday_card_sent_year.is_(None),
+            Patient.birthday_card_sent_year != now.year,
+        ),
+    ).order_by(Patient.name).all()
 
+    upcoming_appointments = Appointment.query.filter(
+        Appointment.date >= now_gmt8().replace(tzinfo=None)
+    ).order_by(Appointment.date).limit(8).all()
 
-@app.route('/survey/add', methods=['POST'])
-@login_required
-def add_survey_link():
-    title = (request.form.get('title') or '').strip()
-    url = (request.form.get('url') or '').strip()
-    qualtrics_survey_id = (request.form.get('qualtrics_survey_id') or '').strip() or None
-    pid_field = (request.form.get('pid_field') or '').strip() or None
-    is_active = request.form.get('is_active') == 'on'
-
-    if not title or not url:
-        flash('Survey title and link are required.', 'error')
-        return redirect(url_for('index'))
-
-    if not (url.startswith('http://') or url.startswith('https://')):
-        flash('Survey link must start with http:// or https://', 'error')
-        return redirect(url_for('index'))
-
-    survey = SurveyLink(
-        title=title,
-        url=url,
-        qualtrics_survey_id=qualtrics_survey_id,
-        pid_field=pid_field,
-        is_active=is_active,
+    return render_template(
+        'index.html',
+        patients=patients,
+        survey_overview=survey_overview,
+        staff_alert_numbers_value=staff_alert_numbers_value,
+        birthday_pending=birthday_pending,
+        upcoming_appointments=upcoming_appointments,
     )
-    db.session.add(survey)
-    db.session.commit()
-    flash('Survey link added.', 'success')
-    return redirect(url_for('index'))
-
-
-@app.route('/survey/toggle/<int:survey_id>', methods=['POST'])
-@login_required
-def toggle_survey_link(survey_id):
-    survey = SurveyLink.query.get_or_404(survey_id)
-    survey.is_active = not survey.is_active
-    db.session.commit()
-    flash(f"Survey '{survey.title}' is now {'active' if survey.is_active else 'inactive'}.", 'success')
-    return redirect(url_for('index'))
-
-
-@app.route('/survey/delete/<int:survey_id>', methods=['POST'])
-@login_required
-def delete_survey_link(survey_id):
-    survey = SurveyLink.query.get_or_404(survey_id)
-    SurveyReminderLog.query.filter_by(survey_link_id=survey.id).delete()
-    db.session.delete(survey)
-    db.session.commit()
-    flash('Survey link deleted.', 'success')
-    return redirect(url_for('index'))
-
-@app.route('/survey/<int:survey_id>/upload_responses', methods=['POST'])
-@login_required
-def upload_survey_responses(survey_id):
-    """
-    Accept a Qualtrics CSV export and populate QualtricsResponse records.
-    This is the API-free alternative: download the responses CSV from the
-    Qualtrics website and upload it here instead of using the Qualtrics API.
-    """
-    survey = SurveyLink.query.get_or_404(survey_id)
-
-    if 'csv_file' not in request.files:
-        flash('No file selected.', 'error')
-        return redirect(url_for('index'))
-
-    f = request.files['csv_file']
-    if not f.filename or not f.filename.lower().endswith('.csv'):
-        flash('Please upload a CSV (.csv) file.', 'error')
-        return redirect(url_for('index'))
-
-    try:
-        content = f.read().decode('utf-8-sig')  # utf-8-sig strips the BOM that Excel adds
-        reader = csv.DictReader(io.StringIO(content))
-        all_rows = list(reader)
-
-        # Qualtrics CSV exports have 3 header rows:
-        #   Row 1 – column IDs (used as dict keys by DictReader)
-        #   Row 2 – human-readable question text  (e.g. "Response ID", "Patient ID")
-        #   Row 3 – ImportId JSON strings         (e.g. {"ImportId":"responseId"})
-        # Detect and skip those metadata rows: scan until we find the first row
-        # whose first value starts with '{' (the ImportId row), then skip
-        # everything up to and including that row.
-        skip = 0
-        for i, row in enumerate(all_rows[:3]):
-            first_val = next(iter(row.values()), '')
-            if first_val.startswith('{'):
-                skip = i + 1  # skip the label row(s) and this ImportId row
-                break
-        data_rows = all_rows[skip:]
-
-        if not data_rows:
-            flash('The CSV file contains no data rows. Please check the file and try again.', 'error')
-            return redirect(url_for('index'))
-
-        pid_field = (survey.pid_field or 'PID').strip()
-        survey_code = survey.qualtrics_survey_id or f'survey-{survey.id}'
-        now = datetime.utcnow()
-        synced = 0
-        skipped = 0
-
-        for i, row in enumerate(data_rows):
-            # Find the PID value – try exact name then case-insensitive
-            pid_raw = row.get(pid_field) or row.get(pid_field.lower()) or row.get(pid_field.upper())
-            if pid_raw is None:
-                for col, val in row.items():
-                    if col.lower() == pid_field.lower():
-                        pid_raw = val
-                        break
-
-            if not pid_raw or not str(pid_raw).strip():
-                skipped += 1
-                continue
-
-            pid = str(pid_raw).strip().upper()
-            if not pid:
-                skipped += 1
-                continue
-
-            # Build a stable response ID from ResponseId column or fall back to row index
-            response_id_raw = (
-                row.get('ResponseId') or row.get('responseId') or
-                row.get('response_id') or f'upload-row-{i}'
-            )
-            response_id = f'{survey_code}:{response_id_raw}'
-
-            recorded_at = None
-            for ts_col in ('RecordedDate', 'recordedDate', 'EndDate', 'endDate'):
-                raw_ts = row.get(ts_col)
-                if raw_ts:
-                    try:
-                        recorded_at = datetime.fromisoformat(str(raw_ts).replace('Z', '+00:00'))
-                    except ValueError:
-                        pass
-                    break
-
-            existing = QualtricsResponse.query.filter_by(qualtrics_response_id=response_id).first()
-            if existing:
-                existing.survey_code = survey_code
-                existing.pid = pid
-                existing.recorded_at = recorded_at or existing.recorded_at
-                existing.last_seen_at = now
-            else:
-                db.session.add(QualtricsResponse(
-                    survey_code=survey_code,
-                    pid=pid,
-                    qualtrics_response_id=response_id,
-                    recorded_at=recorded_at,
-                    last_seen_at=now,
-                ))
-            synced += 1
-
-        if synced:
-            db.session.commit()
-
-        flash(
-            f'CSV uploaded: {synced} response(s) recorded, {skipped} row(s) skipped (no PID).',
-            'success',
-        )
-    except Exception as e:
-        flash(f'Error processing CSV: {str(e)}', 'error')
-
-    return redirect(url_for('index'))
 
 
 @app.route('/admin/run_survey_reminders', methods=['POST'])
@@ -314,6 +208,72 @@ def run_survey_reminders_now():
         flash('Survey reminders job completed.', 'success')
     except Exception as e:
         flash(f'Error running survey reminders: {str(e)}', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/survey/link_override', methods=['POST'])
+@login_required
+def save_survey_link_override():
+    survey_code = (request.form.get('survey_code') or '').strip()
+    survey_link = (request.form.get('survey_link') or '').strip()
+
+    if not survey_code:
+        flash('Survey code is required.', 'error')
+        return redirect(url_for('index'))
+
+    existing = SurveyLinkOverride.query.filter_by(survey_code=survey_code).first()
+
+    # Empty link means remove custom override and fallback to env default/map.
+    if not survey_link:
+        if existing:
+            db.session.delete(existing)
+            db.session.commit()
+            flash(f"Custom survey link removed for '{survey_code}'.", 'success')
+        else:
+            flash('No custom survey link to remove.', 'success')
+        return redirect(url_for('index'))
+
+    if not (survey_link.startswith('http://') or survey_link.startswith('https://')):
+        flash('Survey link must start with http:// or https://', 'error')
+        return redirect(url_for('index'))
+
+    if existing:
+        existing.survey_link = survey_link
+    else:
+        db.session.add(SurveyLinkOverride(survey_code=survey_code, survey_link=survey_link))
+    db.session.commit()
+    flash(f"Custom survey link saved for '{survey_code}'.", 'success')
+    return redirect(url_for('index'))
+
+
+@app.route('/settings/staff_alert_numbers', methods=['POST'])
+@login_required
+def save_staff_alert_numbers():
+    raw_value = request.form.get('staff_alert_numbers', '')
+
+    try:
+        normalized_numbers = normalize_phone_list(raw_value)
+    except ValueError as exc:
+        flash(f'Invalid staff number list: {exc}', 'error')
+        return redirect(url_for('index'))
+
+    setting = AppSetting.query.filter_by(setting_key='staff_alert_numbers').first()
+
+    if not normalized_numbers:
+        if setting:
+            db.session.delete(setting)
+            db.session.commit()
+        flash('Staff alert numbers cleared. Backend fallback will use STAFF_ALERT_NUMBERS if set.', 'success')
+        return redirect(url_for('index'))
+
+    normalized_value = ','.join(normalized_numbers)
+    if setting:
+        setting.setting_value = normalized_value
+    else:
+        db.session.add(AppSetting(setting_key='staff_alert_numbers', setting_value=normalized_value))
+
+    db.session.commit()
+    flash('Staff alert numbers saved.', 'success')
     return redirect(url_for('index'))
 
 
@@ -355,16 +315,12 @@ def add_patient():
             flash('Error: Invalid birthdate format.', 'error')
             return redirect(url_for('index'))
 
-    send_ediary = request.form.get('send_ediary_reminders') == 'on'
-    send_survey = request.form.get('send_survey_reminders') == 'on'
-
     new_patient = Patient(
         pid=pid,
         name=name,
         birthdate=birthdate,
         description=description or None,
-        send_ediary_reminders=send_ediary,
-        send_survey_reminders=send_survey,
+        send_survey_reminders=True,
     )
     new_patient.phone_number = phone
 
@@ -378,13 +334,15 @@ def add_patient():
 @login_required
 def delete_patient(patient_id):
     patient = Patient.query.get_or_404(patient_id)
-    # Delete related records manually if cascade is not set up in models (simple deletion for now)
-    # SQLAlchemy default relationship might not cascade delete if not configured
     Appointment.query.filter_by(patient_id=patient_id).delete()
-    DiaryEntry.query.filter_by(patient_id=patient_id).delete()
+    SurveyReminderEvent.query.filter_by(patient_id=patient_id).delete()
+    SurveyReminderEscalation.query.filter_by(patient_id=patient_id).delete()
+    if patient.pid:
+        QualtricsResponse.query.filter_by(pid=patient.pid).delete()
     
     db.session.delete(patient)
     db.session.commit()
+    flash('Patient data deleted.', 'success')
     return redirect(url_for('index'))
 
 @app.route('/patient/<int:patient_id>')
@@ -392,8 +350,7 @@ def delete_patient(patient_id):
 def view_patient(patient_id):
     patient = Patient.query.get_or_404(patient_id)
     appointments = Appointment.query.filter_by(patient_id=patient_id).order_by(Appointment.date).all()
-    diary_entries = DiaryEntry.query.filter_by(patient_id=patient_id).order_by(DiaryEntry.date.desc()).all()
-    return render_template('patient_detail.html', patient=patient, appointments=appointments, diary_entries=diary_entries)
+    return render_template('patient_detail.html', patient=patient, appointments=appointments)
 
 @app.route('/appointment/add', methods=['POST'])
 @login_required
@@ -417,16 +374,16 @@ def send_appointment_reminder_now(appointment_id):
     appointment = Appointment.query.get_or_404(appointment_id)
     patient = appointment.patient
     
-    msg = f"你好 {patient.name} 小朋友，溫馨提示：{appointment.date.strftime('%m月%d日 %H:%M')} 有預約。"
+    msg = f"{patient.name}，提醒您：您於 {appointment.date.strftime('%m月%d日 %H:%M')} 有預約。"
     if appointment.description:
-        msg += f" 備註: {appointment.description}"
+        msg += f" 備註：{appointment.description}"
     
     cal_link = generate_google_calendar_link(
-        title=f"醫務覆診 - {patient.name}",
+        title=f"診症預約 - {patient.name}",
         start_dt=appointment.date,
         description=appointment.description or "Medical Appointment"
     )
-    msg += f"\n\n加落 Google Calendar: {cal_link}"
+    msg += f"\n\n行事曆連結：{cal_link}"
     
     try:
         client = BaileysClient()
@@ -500,8 +457,7 @@ def edit_patient(patient_id):
     else:
         patient.birthdate = None
     
-    patient.send_ediary_reminders = request.form.get('send_ediary_reminders') == 'on'
-    patient.send_survey_reminders = request.form.get('send_survey_reminders') == 'on'
+    patient.send_survey_reminders = True
     
     db.session.commit()
     flash('Patient details updated.', 'success')
@@ -545,7 +501,7 @@ def confirm_send_birthday_card(patient_id):
             client = BaileysClient()
             result = client.send_message(patient.phone_number, card_text)
             if result and result.get('status') != 'error':
-                patient.birthday_card_sent_year = datetime.now().year
+                patient.birthday_card_sent_year = now_gmt8().year
                 db.session.commit()
                 flash('Birthday card sent successfully!', 'success')
             else:
@@ -584,7 +540,7 @@ def whatsapp_webhook():
 
         if len(matched_patients) > 1:
             client = BaileysClient()
-            client.send_message(sender, "唔好意思，呢個電話號碼綁定咗多過一位病人，系統暫時未能自動分辨。請直接聯絡診所同事處理。")
+            client.send_message(sender, "此電話號碼對應多位病人，系統暫時無法自動識別。請聯絡診所職員處理。")
             return jsonify({'status': 'ignored', 'reason': 'ambiguous_phone_match'}), 200
 
         patient = matched_patients[0] if matched_patients else None
@@ -597,23 +553,11 @@ def whatsapp_webhook():
 
             # Check length (max 500 characters)
             if len(message_content) > 500:
-                client.send_message(sender, "唔好意思，你輸入嘅內容超過咗500字元。請縮短內容後再發送。如果你有更加多嘢想同醫生講，可以直接喺Whatsapp搵佢！")
+                client.send_message(sender, "您輸入的內容超過 500 字，請縮短後再發送。")
                 return jsonify({'status': 'ignored', 'reason': 'message_too_long'}), 200
             
-            # Check prefix for eDiary
-            if not message_content.strip().startswith(('日記：', '日記:')):
-                client.send_message(sender, "唔好意思，而家我只係能夠接收你嘅電子日記😔如果你想寫日記俾我哋的話，請喺訊息一開頭包括「日記：」呢個標示！")
-                return jsonify({'status': 'ignored', 'reason': 'invalid_format'}), 200
-
-            # Store as Diary Entry
-            entry = DiaryEntry(patient_id=patient.id, content=message_content)
-            db.session.add(entry)
-            db.session.commit()
-            
-            # Optionally reply confirming receipt
-            client.send_message(sender, "感謝！已收到您的電子日記內容。")
-            
-            return jsonify({'status': 'success', 'message': 'diary_saved'}), 200
+            client.send_message(sender, "已收到您的訊息。請留意系統發送的預約、生日卡及問卷通知。")
+            return jsonify({'status': 'received'}), 200
         else:
             print(f"Received message from unknown number: {sender}")
             return jsonify({'status': 'ignored', 'reason': 'unknown_patient'}), 200
@@ -639,7 +583,6 @@ def seed_mock_patients():
             pid=pid,
             name=f'Mock Patient {pid}',
             description='Mock record for Qualtrics survey reminder testing.',
-            send_ediary_reminders=False,
             send_survey_reminders=True,
         )
         patient.phone_number = shared_phone
@@ -693,8 +636,10 @@ def _migrate_db():
 
     # Ensure the new response-tracking table exists for older databases.
     QualtricsResponse.__table__.create(db.engine, checkfirst=True)
-    SurveyLink.__table__.create(db.engine, checkfirst=True)
-    SurveyReminderLog.__table__.create(db.engine, checkfirst=True)
+    SurveyLinkOverride.__table__.create(db.engine, checkfirst=True)
+    SurveyReminderEvent.__table__.create(db.engine, checkfirst=True)
+    SurveyReminderEscalation.__table__.create(db.engine, checkfirst=True)
+    AppSetting.__table__.create(db.engine, checkfirst=True)
 
     with db.engine.connect() as conn:
         existing_qr_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(qualtrics_response)")).fetchall()]
@@ -711,12 +656,6 @@ def create_scheduler():
     scheduler = BackgroundScheduler()
     # Check for appointments every hour (or once a day)
     scheduler.add_job(func=scheduler_tasks.send_appointment_reminders, args=[app], trigger="interval", hours=1)
-
-    # Send diary reminder every day at 8:00 PM HK time
-    scheduler.add_job(func=scheduler_tasks.send_daily_diary_reminders, args=[app], trigger="cron", hour=20, minute=0)
-
-    # Send birthday cards every day at 10:00 AM
-    scheduler.add_job(func=scheduler_tasks.send_birthday_cards, args=[app], trigger="cron", hour=10, minute=0)
 
     # Sync Qualtrics responses and remind non-responders daily at 9:00 AM
     scheduler.add_job(func=scheduler_tasks.send_daily_survey_reminders, args=[app], trigger="cron", hour=9, minute=0)

@@ -1,0 +1,21 @@
+### How to Use the HealthBot Dashboard
+
+**1. Patient Management**
+- Use the **Add Patient Data** section to register new patients.
+- **PID** must follow the format `P01` to `P99`.
+- **Phone** must be in the format `852xxxxxxxx`.
+- You can **Delete** patient data if needed; this will also remove their appointment and survey history.
+
+**2. Survey Reminders**
+- The system automatically syncs survey responses from the SFTP folder (`/home/qualtricssftp/uploads`).
+- If a patient hasn't filled in a survey, they receive a daily reminder.
+- After **7 failed attempts**, the patient stops receiving reminders and an alert is sent to **Staff WhatsApp Numbers**.
+- You can set individual survey links in the **Survey Reminding** center.
+
+**3. Appointments**
+- Schedule appointments in the **Patient Detail** page.
+- Reminders are automatically sent 1 day before the appointment at 09:00 HKT (GMT+8).
+
+**4. Birthday Cards**
+- Patients with birthdays today appear in the **Send Birthday Card** section.
+- Click **Prepare Card** to generate a personalized message using AI, then review and click **Send**.

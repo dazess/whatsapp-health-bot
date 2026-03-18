@@ -7,7 +7,7 @@ The app now supports:
 - PID-based patient matching (`P01`, `P02`, ...)
 - Multi-survey management from admin dashboard (add as many survey links as needed)
 - Daily Qualtrics response sync per active survey (when Survey ID is provided)
-- Daily Cantonese WhatsApp reminders to patients whose PID has not responded for each survey
+- Daily WhatsApp reminders to patients whose PID has not responded for each survey
 - Mock seeding for `P01` to `P10` using shared phone `85252624849`
 
 ## Required Environment Variables
@@ -33,7 +33,7 @@ Survey reminder job runs daily at 09:00 (server local time):
 - Load all active survey links
 - Sync Qualtrics responses into local table for each survey that has a Qualtrics Survey ID
 - Compare submitted PIDs with local patients for each survey
-- Send Cantonese reminder with each survey link to non-responders only
+- Send reminder with each survey link to non-responders only
 - Avoid duplicate send in the same day using per-survey reminder logs
 
 ## Mock Data Seeding

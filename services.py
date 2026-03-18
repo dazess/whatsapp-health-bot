@@ -8,7 +8,7 @@ OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 def generate_birthday_card(patient_name: str, patient_description: str = '') -> str:
     """
-    Calls the OpenRouter API to generate a personalised Cantonese birthday card message.
+    Calls the OpenRouter API to generate a personalised birthday card message.
     Raises an exception with a descriptive message if anything goes wrong.
     """
     api_key = os.getenv('OPENROUTER_API_KEY', '').strip()
@@ -18,15 +18,14 @@ def generate_birthday_card(patient_name: str, patient_description: str = '') -> 
     description_hint = f"\n病人資料：{patient_description}" if patient_description else ""
 
     prompt = (
-        f"你係一位親切嘅醫療診所職員，需要為病人「{patient_name}」用廣東話口語寫一張溫馨嘅WhatsApp生日卡。"
+        f"你是一位親切的醫療診所職員，需要為病人「{patient_name}」撰寫一張溫馨的 WhatsApp 生日卡。"
         f"{description_hint}\n\n"
         "要求：\n"
-        "1. 全程使用廣東話口語（唔係書面語）\n"
+        "1. 使用繁體中文書面語\n"
         "2. 語氣溫暖、親切、真誠，對象為小朋友\n"
-        "3. 適當加入生日賀詞，可提及健康（小朋友有食物敏感）、開心等祝願\n"
-        "4. 長度適中，大約50字\n"
-        "5. 只輸出生日卡內容本身，唔需要任何解釋或標題"
-        "6. 包括生日快樂，並非生日大快樂"
+        "3. 可加入健康與愉快成長的祝福\n"
+        "4. 長度約 50 至 80 字\n"
+        "5. 只輸出生日卡內容本身，不需標題或解釋。"
     )
 
     response = requests.post(
@@ -58,8 +57,8 @@ def generate_birthday_card(patient_name: str, patient_description: str = '') -> 
 def _default_birthday_card(patient_name: str) -> str:
     return (
         f"🎂 {patient_name}，生日快樂！\n\n"
-        "今日係你嘅大日子，我哋診所全體同事祝你生日快樂、身體健康、萬事如意！\n"
-        "希望你今日笑口常開，開開心心慶祝呢個特別嘅日子！🎉🎊"
+        "今天是你的大日子，診所全體同事祝你生日快樂、身體健康、平安喜樂！\n"
+        "祝你每天都開心成長，笑容滿滿！🎉🎊"
     )
 
 def generate_google_calendar_link(title, start_dt, description=""):
@@ -82,7 +81,7 @@ def generate_google_calendar_link(title, start_dt, description=""):
 
 def send_patient_greeting_if_needed(patient, client=None):
     """
-    Checks if a patient has been greeted yet. If not, sends the Cantonese
+    Checks if a patient has been greeted yet. If not, sends an
     introductory message and marks 'greeted' as True in the database.
     """
     if patient.greeted:
@@ -92,11 +91,9 @@ def send_patient_greeting_if_needed(patient, client=None):
         client = BaileysClient()
         
     greeting = (
-        f"你好 {patient.name}！我係醫務助手。😊\n\n"
-        "我會幫你記住預約時間同埋記錄你嘅電子日記。\n"
-        "• 如果有預約，我會喺預約之前發送溫馨提示俾你。\n"
-        "• 如果你想記錄電子日記，請喺訊息開頭加入「日記：」（例如：日記：今日覺得好返啲）。\n\n"
-        "如有任何查詢，隨時搵我哋！"
+        f"您好 {patient.name}，這裡是診所訊息助理。\n\n"
+        "我們會向您發送預約提醒、生日卡與問卷通知。\n"
+        "如有任何查詢，請聯絡診所職員。"
     )
     
     print(f"Sending first-time greeting to {patient.name} ({patient.phone_number})...")
