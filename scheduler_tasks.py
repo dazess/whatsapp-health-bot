@@ -32,7 +32,7 @@ def send_appointment_reminders(app):
         for appointment in appointments:
             patient = appointment.patient
             send_patient_greeting_if_needed(patient, client)
-            msg = f"{patient.name}，提醒您：您明天 {appointment.date.strftime('%H:%M')} 有預約。"
+            msg = f"{patient.name}，提提您：您明天 {appointment.date.strftime('%H:%M')} 預約咗覆診。"
 
             cal_link = generate_google_calendar_link(
                 title=f"診症預約 - {patient.name}",
@@ -40,7 +40,7 @@ def send_appointment_reminders(app):
                 description=appointment.description or 'Clinic appointment',
             )
             msg += f"\n\n行事曆連結：{cal_link}"
-
+            msg += "\n\nZoom會議連結：placeholder.com" 
             result = client.send_message(patient.phone_number, msg)
             if result and result.get('status') == 'sent':
                 appointment.reminded = True
